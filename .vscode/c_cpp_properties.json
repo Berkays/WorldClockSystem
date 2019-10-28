@@ -1,0 +1,20 @@
+{
+    "configurations": [
+        {
+            "name": "Win32",
+            "includePath": [
+                "C:\\Users\\berka\\Documents\\Arduino\\libraries\\arduino-ds1302-master",
+                "C:\\Users\\berka\\Documents\\Arduino\\libraries\\Tasker",
+                "C:\\Users\\berka\\Documents\\Arduino\\libraries\\FastLED",
+                "C:\\Users\\berka\\Documents\\Arduino\\libraries\\TM1637",
+                "C:\\Users\\berka\\Desktop\\arduino-1.8.9\\tools\\**",
+                "C:\\Users\\berka\\Desktop\\arduino-1.8.9\\hardware\\arduino\\avr\\**"
+            ],
+            "forcedInclude": [
+                "C:\\Users\\berka\\Desktop\\arduino-1.8.9\\hardware\\arduino\\avr\\cores\\arduino\\Arduino.h"
+            ],
+            "intelliSenseMode": "clang-x64"
+        }
+    ],
+    "version": 4
+}
