@@ -1,4 +1,4 @@
-#define TASKER_MAX_TASKS 5
+#define TASKER_MAX_TASKS 3
 #include <Tasker.h>
 
 #include "TM1637Display.h"
@@ -32,13 +32,15 @@ TM1637Display display(TM_CLK, TM_DIO);
 #pragma endregion
 
 #pragma region LED
-#define LED_DAT 11 // Data
-#define LED_CLK 10 // Clock
+#define LED_DAT 11  // Data
+#define LED_CLK 10  // Clock
 #define NUM_LEDS 50 // # of Leds in strip
 #define LEDS_PER_MERIDIAN 4
 
-#define FADED_BRIGHTNESS 20
-#define MAX_BRIGHTNESS 180
+#define FADED_BRIGHTNESS 10
+#define MAX_BRIGHTNESS 255
+
+boolean isRunning = false;
 
 int current_led = 0;
 CRGB fadeColor(FADED_BRIGHTNESS, 0, 0);
@@ -46,40 +48,20 @@ CRGB brightColor(MAX_BRIGHTNESS, 0, 0);
 CRGB darkColor(0, 0, 0);
 
 CRGB leds[NUM_LEDS];
-
-byte LedPwr = 0;
-byte LedBrightness = 0;
 #pragma endregion
 
 Tasker tasker;
-
-/*
- 48 Leds divided into 12 meridians.
- 48/12 = 4 Leds per meridians.
- UTC -7: Los Angeles
- UTC -4: New York
- UTC -3: Rio de Janeiro
- UTC +0:
- UTC +1: Londra 
- UTC +2: Paris
- UTC +3: Moskova/Istanbul
- UTC +4: Dubai
- UTC +5.5: Hindistan
- UTC +8: Singapur/Pekin
- UTC +9: Tokyo
- UTC +10: Sidney
- */
 
 /*
  Comm protocol:
 
  Set Power
  Cmd: 0x01 1 byte
- State: 1-2 byte
+ State: 0-1 1 byte
 
 Set Brightness
  Cmd: 0x02 1 byte
- Brightness: 0-254 1 byte
+ Brightness: 1-4 1 byte 25% Step
 
  Set Time
  Cmd: 0x03 1 byte 
@@ -94,20 +76,12 @@ Set Brightness
 Set Disable BT-Power
  Cmd: 0x04 1 byte
 
-Set Name
- Cmd: 0x05 1 byte
- Name: ? byte
-
 Get Status
  Cmd: 0x06 1 byte
  Power state: 0-1 1 byte
  Brightness: 0-254 1 byte
  Time : struct 8 byte
  Name : string ? byte
-
- After each CMD
- Check: 0xAA 1 byte
- NewValue: ???????
 */
 
 #define CMD_POWER 0x01
@@ -116,7 +90,6 @@ Get Status
 #define CMD_BT_PWR 0x04
 #define CMD_NAME 0x05
 #define CMD_STATUS 0x06
-#define CHECK 0xAA
 
 #pragma pack(1)
 typedef struct TimeStatus
@@ -127,17 +100,17 @@ typedef struct TimeStatus
     byte hour;
     byte minute;
     byte second;
-    byte dayOfWeek;
 };
 #pragma pop()
 typedef struct Status
 {
+    byte check;
     byte led_state;
     byte led_brightness;
     TimeStatus time;
 };
 
-Time currentTime(2099, 1, 1, 0, 0, 0, Time::kSunday);
+Time currentTime(2019, 0, 0, 0, 0, 0, Time::kSunday);
 Status status;
 
 void setup()
@@ -147,46 +120,50 @@ void setup()
 
     pinMode(LED_DAT, OUTPUT);
     pinMode(LED_CLK, OUTPUT);
-    
+
     digitalWrite(BT_ENABLE, HIGH);
-    // attachInterrupt(BT_ENABLE_INTERRUPT, awake_bt, LOW);
+    attachInterrupt(BT_ENABLE_INTERRUPT, awake_bt, LOW);
 
     BT.begin(9600);
     Serial.begin(9600);
 
-    setupBLE();
+    // setupBLE();
+
+    status.check = 0;
+    status.led_state = 1;
+    status.led_brightness = 2; // N * 25%
 
     display.setBrightness(1, true);
 
     // Init WS2801 LED Strip
     FastLED.addLeds<WS2801, LED_DAT, LED_CLK, GRB>(leds, NUM_LEDS);
-    FastLED.setBrightness(96);
-    FastLED.clear();
-    test_strip();
+    set_brightness(status.led_brightness);
 
+
+    show_led();
     tasker.setInterval(update_time, 5000);
-    tasker.setInterval(check_data, 1000);
+    tasker.setInterval(change_region_task, 10000);
 }
 
 void loop()
 {
     tasker.loop();
     recv();
-    test_strip();
 }
 
 void setupBLE()
 {
-    mySerial.println("AT");
+    BT.println("AT+ROLE0");
     delay(100);
-    mySerial.println("AT+ROLE0");
-    delay(100);
-    mySerial.println("AT+UUID0xFF00");
-    delay(100);
-    mySerial.println("AT+CHAR0xFF01");
-    delay(100);
-    mySerial.println("AT+NAMEClock");
-    delay(100);
+    // Flush buffer
+    while (BT.available())
+    {
+    }
+    delay(500);
+    // sendCommand("AT+NAMEClock");
+    BT.print("AT+NAME");
+    BT.println("WClock A9F54");
+    delay(2000);
 }
 
 void recv()
@@ -201,21 +178,14 @@ void recv()
 
         if (recvInProgress == true)
         {
-            if (rc != END_MARKER)
+            buffer[ndx] = rc;
+            ndx++;
+            if (ndx >= BUFFER_SIZE - 1)
             {
-                buffer[ndx] = rc;
-                ndx++;
-                if (ndx >= BUFFER_SIZE)
-                {
-                    ndx = BUFFER_SIZE - 1;
-                }
-            }
-            else
-            {
-                buffer[ndx] = '\0'; //terminate the string
                 recvInProgress = false;
                 ndx = 0;
                 newData = true;
+                check_data();
             }
         }
 
@@ -237,25 +207,17 @@ void check_data()
 
 void parse_data()
 {
-    Serial.println("CMD");
     byte command = buffer[0];
-    Serial.println(command);
     if (command == CMD_POWER)
     {
-        byte state = buffer[1];
-        if (state == 1)
-            open_led();
-        else
-            close_led();
-        BT.println(CHECK);
+        toggle_led();
+        transmitStatus();
     }
     else if (command == CMD_BRIGHTNESS)
     {
         byte brightness = buffer[1];
-        Serial.print("Led brighntess:");
-        Serial.println(brightness);
         set_brightness(brightness);
-        BT.println(CHECK);
+        transmitStatus();
     }
     else if (command == CMD_TIME)
     {
@@ -270,96 +232,101 @@ void parse_data()
         currentTime.hr = status.time.hour;
         currentTime.min = status.time.minute;
         currentTime.sec = status.time.second;
-        currentTime.day = status.time.dayOfWeek;
         RTC.time(currentTime);
-        Serial.println("RTC Time:");
-        Serial.println(status.time.hour);
-        BT.println(CHECK);
+        transmitStatus();
     }
     else if (command == CMD_BT_PWR)
     {
+        // Irreversible
         digitalWrite(BT_ENABLE, LOW);
-    }
-    else if (command == CMD_NAME)
-    {
-        // byte name = buffer[1];
-        // Serial.println("Set name");
-        //TODO: Set name
-        BT.println(CHECK);
     }
     else if (command == CMD_STATUS)
     {
-        currentTime = RTC.time();
-        status.time = {currentTime.yr, currentTime.mon, currentTime.date, currentTime.hr, currentTime.min, currentTime.sec, (byte)currentTime.day};
-        Serial.println("Get status");
-        Serial.println(status.led_state);
-        Serial.println(status.led_brightness);
-        Serial.println(status.time.hour);
-        BT.println(CHECK);
+        update_time();
+        transmitStatus();
     }
+}
+
+void transmitStatus()
+{
+    status.check = 1;
+    byte structSize = sizeof(status);
+    BT.write((byte *)&status, structSize);
+    BT.println();
+    BT.flush();
+    status.check = 0;
 }
 
 void update_time()
 {
-    Time ct = RTC.time();
-
+    currentTime = RTC.time();
+    status.time = {currentTime.yr, currentTime.mon, currentTime.date, currentTime.hr, currentTime.min, currentTime.sec};
     int time = 0;
-    time += ct.hr * 100;
-    time += ct.min;
+    time += currentTime.hr * 100;
+    time += currentTime.min;
     display.showNumberDecEx(time, 0b01000000, true);
 }
 
-void test_strip()
+void change_region_task()
 {
-    for (uint8_t i = 0; i < 255; i++)
-    {
-        // cur + 1 --> DIM
-        fadeTowardColor(leds[normalize(current_led + 3)], CRGB::Black, 1);
-        fadeTowardColor(leds[normalize(current_led + 2)], fadeColor, 1);
-        fadeTowardColor(leds[normalize(current_led + 1)], fadeColor, 1);
-        // cur --> FULL
-        fadeTowardColor(leds[current_led], brightColor, 2);
-        // cur - 1 --> DIM
-        fadeTowardColor(leds[normalize(current_led - 1)], fadeColor, 2);
-        // cur - 2 --> DARK
-        // leds[normalize(current_led - 2)] = CRGB::Black;
-        // leds[normalize(current_led - 1)] = fadeColor;
-        // leds[normalize(current_led)] = brightColor;
-        // leds[normalize(current_led + 1)] = fadeColor;
-        fadeTowardColor(leds[normalize(current_led - 2)], fadeColor, 1);
-        fadeTowardColor(leds[normalize(current_led - 3)], CRGB::Black, 1);
-
-        FastLED.show();
-        FastLED.delay(10);
-    }
-
-    FastLED.delay(40);
     current_led++;
     if (current_led >= NUM_LEDS)
         current_led = 0;
 }
 
-void close_led()
+void toggle_led()
 {
-    status.led_state = 0;
-    FastLED.clear();
-}
-
-void open_led()
-{
-    status.led_state = 1;
-    //TODO: Fastleds.start();
+    status.led_state = (status.led_state + 1) % 2;
+    if (status.led_state == 0)
+    {
+        tasker.clearInterval(show_led_task);
+        FastLED.clear();
+        FastLED.show();
+        isRunning = false;
+    }
+    else
+    {
+        show_led();
+    }
 }
 
 void set_brightness(byte value)
 {
     status.led_brightness = value;
-    FastLED.setBrightness(value);
+    FastLED.setBrightness((byte)(value * 25 * 2.5));
+    // FastLED.show();
 }
 
 void awake_bt()
 {
     digitalWrite(BT_ENABLE, HIGH);
+    delay(1000);
+}
+
+void show_led()
+{
+    if (!isRunning)
+    {
+        tasker.setInterval(show_led_task, 400);
+        isRunning = true;
+    }
+}
+
+void show_led_task()
+{
+    // cur + 1 --> DIM
+    fadeTowardColor(leds[normalize(current_led + 3)], CRGB::Black, 1);
+    fadeTowardColor(leds[normalize(current_led + 2)], fadeColor, 1);
+    fadeTowardColor(leds[normalize(current_led + 1)], fadeColor, 1);
+    // cur --> FULL
+    fadeTowardColor(leds[current_led], brightColor, 2);
+    // cur - 1 --> DIM
+    fadeTowardColor(leds[normalize(current_led - 1)], fadeColor, 1);
+    // cur - 2 --> DARK
+    fadeTowardColor(leds[normalize(current_led - 2)], fadeColor, 1);
+    fadeTowardColor(leds[normalize(current_led - 3)], CRGB::Black, 1);
+
+    FastLED.show();
 }
 
 void nblendU8TowardU8(uint8_t &cur, const uint8_t target, uint8_t amount)
