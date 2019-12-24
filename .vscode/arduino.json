@@ -1,8 +1,8 @@
 {
-    "board": "arduino:avr:nano",
-    "port": "COM3",
-    "sketch": "main.ino",
-    "configuration": "cpu=atmega328old",
+    "board": "MiniCore:avr:328",
+    "port": "COM6",
+    "sketch": "clock.ino",
     "programmer": "AVRISP mkII",
-    "output": "./build"
+    "output": "./build",
+    "configuration": "bootloader=uart0,variant=modelP,BOD=disabled,LTO=Os_flto,clock=8MHz_internal"
 }
