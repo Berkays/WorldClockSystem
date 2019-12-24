@@ -1,8 +1,8 @@
 {
-    "board": "MiniCore:avr:328",
+    "board": "ATTinyCore:avr:attinyx5",
     "port": "COM6",
     "sketch": "clock.ino",
     "programmer": "AVRISP mkII",
     "output": "./build",
-    "configuration": "bootloader=uart0,variant=modelP,BOD=disabled,LTO=Os_flto,clock=8MHz_internal"
+    "configuration": "LTO=enable,TimerClockSource=default,chip=85,clock=8internal,eesave=aenable,bod=disable,millis=enabled"
 }
