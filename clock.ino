@@ -1,49 +1,40 @@
-#define TASKER_MAX_TASKS 2
-#include <Button.h>
-#include <Arduino.h>
-#include <SoftwareSerial.h>
-#include <Adafruit_WS2801.h>
-#include <SPI.h>
-#include <Tasker.h>
-Button brightBtn = Button(A5);
-Button speedBtn = Button(A4);
-// #include <DS1302.h>
+#include "Arduino.h"
+#include <Adafruit_NeoPixel.h>
+// #ifdef __AVR__
+// #include <avr/power.h>
+// #endif
+#include <AnalogButtons.h>
 
-#define BT_RX 7
-#define BT_TX 8
+// #define ARDUINO_RX 7
+// #define ARDUINO_TX 8
 #define BT_ENABLE 9
 // #define BT_ENABLE_INTERRUPT A0
-SoftwareSerial BT(BT_RX, BT_TX); // RX | TX
-#define BUFFER_SIZE 9
+// SoftwareSerial BT(ARDUINO_RX, ARDUINO_TX);
+#define BUFFER_SIZE 5
 byte buffer[BUFFER_SIZE];
 byte cursor = 0;
 boolean newData = false;
 #define START_MARKER 0x0F
 
 #define TIME_PERIOD 1000
-// #pragma region RTC
-// #define DS_CLK 2 // Clock
-// #define DS_DAT 3 // Data
-// #define DS_RST 4 // Reset
-// DS1302 RTC(DS_RST, DS_DAT, DS_CLK);
-// #pragma endregion
 
 #pragma region LED
-#define LED_DAT A2  // Data
-#define LED_CLK A3  // Clock
-#define NUM_LEDS 30 // # of Leds in strip
-#define Increment 48
-#define STEP 3
-#define Kh 28
-#define Km 2
-
-boolean isRunning = true;
+#define LED_DAT 7
+#define NUM_LEDS 96
+#define TWO_PI 6.2831853072
+double INCREMENT = 1440.0 / (double)NUM_LEDS;
+#define LED_THRESHOLD 1
+boolean isRunning = false;
 double minuteCounter = 0;
-// int current_led = 0;
-// double testmin = 0;
-// byte a = 0;
-Adafruit_WS2801 strip = Adafruit_WS2801(NUM_LEDS, LED_DAT, LED_CLK);
-Tasker tasker;
+Adafruit_NeoPixel strip = Adafruit_NeoPixel(NUM_LEDS, LED_DAT, NEO_GRB + NEO_KHZ800);
+#pragma endregion
+
+#pragma region BUTTONS
+#define ANALOG_PIN A3
+
+AnalogButtons analogButtons(ANALOG_PIN, INPUT);
+Button b1 = Button(360, &btn_setSpeed);
+Button b2 = Button(40, &btn_setBrightness);
 #pragma endregion
 
 /*
@@ -84,75 +75,69 @@ Get Status
 #define CMD_BT_PWR 0x04
 #define CMD_NAME 0x05
 #define CMD_STATUS 0x06
-#define CMD_SPEED 0x07
+#define CMD_SPEED 0x07     // FOR DEBUG
+#define CMD_MAPMIN 0x08    // FOR DEBUG
+#define CMD_THRESHOLD 0x09 // FOR DEBUG
+#define CMD_LED_COUNT 0x10 // FOR DEBUG
 
 #pragma pack(1)
-typedef struct TimeStatus
-{
-    byte hour;
-    byte minute;
-    double second;
-};
-#pragma pop()
 typedef struct Status
 {
-    byte check;
-    byte led_state;
-    byte led_brightness;
-    byte speed;
-    TimeStatus time;
+    uint8_t check;
+    uint8_t led_state;
+    uint8_t led_brightness;
+    uint8_t speed;     // FOR DEBUG
+    uint8_t threshold; // FOR DEBUG
+    uint8_t mapMin;    // FOR DEBUG
+    uint8_t ledCount;  // FOR DEBUG
+    uint8_t hour;
+    uint8_t minute;
+    uint16_t second;
 };
+#pragma pop()
 
 Status status;
 unsigned long lastMillis = 0;
 
 void setup()
 {
+    Serial.begin(9600);
     // pinMode(BT_ENABLE, OUTPUT);
-    speedBtn.begin();
-    brightBtn.begin();
+    analogButtons.add(b1);
+    analogButtons.add(b2);
 
     // pinMode(BT_ENABLE_INTERRUPT, INPUT_PULLUP);
-
+    pinMode(8, OUTPUT);
+    digitalWrite(8, HIGH);
     // digitalWrite(BT_ENABLE, HIGH);
     // attachInterrupt(BT_ENABLE_INTERRUPT, awake_bt, LOW);
 
-    // BT.begin(9600);
-    // setupBLE();
-
     status.check = 0;
     status.led_state = 1;
-    status.led_brightness = 4; // N * 25%
+    status.led_brightness = 2; // N * 25%
     status.speed = 0;
-    status.time.hour = 12;
-    status.time.minute = 0;
-    status.time.second = 0;
+    status.threshold = 10;      // FOR DEBUG
+    status.ledCount = NUM_LEDS; // FOR DEBUG
+    status.mapMin = 7;          // FOR DEBUG
+    status.hour = 12;
+    status.minute = 0;
+    status.second = 0;
 
     strip.begin();
+    strip.setBrightness(255);
+    strip.clear();
     strip.show();
 
     test_strip();
     lastMillis = millis();
-    tasker.setInterval(checkBtn, 10);
+    isRunning = true;
 }
 
 void loop()
 {
     updateSecond();
-    tasker.loop();
-    // recv();
-}
-
-void checkBtn()
-{
-    if (speedBtn.pressed())
-    {
-        btn_setSpeed();
-    }
-    if (brightBtn.pressed())
-    {
-        btn_setBrightness();
-    }
+    analogButtons.check();
+    recv();
 }
 
 void updateSecond()
@@ -162,36 +147,36 @@ void updateSecond()
     if (gap > TIME_PERIOD)
     {
         lastMillis = currentMillis;
-
+        unsigned long gapInSeconds = gap / 1000;
         if (status.speed == 0)
         {
-            status.time.second++;
+            status.second += gapInSeconds;
         }
         else if (status.speed == 1)
         {
-            status.time.second += 60;
+            status.second += (60 * gapInSeconds);
         }
         else if (status.speed == 2)
         {
-            status.time.second += 600;
+            status.second += (600 * gapInSeconds);
         }
 
-        uint16_t extra_min = (uint16_t)status.time.second / 60;
-        status.time.second = (uint16_t)status.time.second % 60;
+        uint16_t extra_min = (uint16_t)status.second / 60;
+        status.second = (uint16_t)status.second % 60;
 
-        status.time.minute += extra_min;
+        status.minute += extra_min;
         minuteCounter += extra_min;
 
         if (minuteCounter >= 1440)
             minuteCounter -= 1440;
 
-        if (status.time.minute >= 60)
+        if (status.minute >= 60)
         {
-            status.time.hour++;
-            status.time.minute = status.time.minute % 60;
+            status.hour++;
+            status.minute = status.minute % 60;
 
-            if (status.time.hour == 24)
-                status.time.hour = 0;
+            if (status.hour == 24)
+                status.hour = 0;
         }
 
         if (isRunning)
@@ -201,16 +186,16 @@ void updateSecond()
 
 void setupBLE()
 {
-    BT.println("AT+ROLE0");
+    Serial.println("AT+ROLE0");
     delay(100);
     // Flush buffer
-    while (BT.available())
+    while (Serial.available())
     {
     }
     delay(500);
     // sendCommand("AT+NAMEClock");
-    BT.print("AT+NAME");
-    BT.println("WClock A9F54");
+    Serial.print("AT+NAME");
+    Serial.println("WClock A9F54");
     delay(2000);
 }
 
@@ -219,14 +204,14 @@ void recv()
     static boolean recvInProgress = false;
     static byte ndx = 0;
     byte rc;
-    while (BT.available() > 0 && newData == false)
+    while (Serial.available() > 0 && newData == false)
     {
-        rc = BT.read();
+        rc = Serial.read();
         if (recvInProgress == true)
         {
             buffer[ndx] = rc;
             ndx++;
-            if (ndx >= BUFFER_SIZE - 1)
+            if (ndx >= BUFFER_SIZE)
             {
                 recvInProgress = false;
                 ndx = 0;
@@ -257,32 +242,68 @@ void parse_data()
 
     if (command == CMD_POWER)
     {
-        toggle_led();
+        if (status.led_state == 0)
+            status.led_state = 1;
+        else
+            status.led_state = 0;
         transmitStatus();
+        toggle_led();
     }
     else if (command == CMD_BRIGHTNESS)
     {
         byte brightness = buffer[1];
-        // set_brightness(brightness);
+        if (brightness == 0)
+            brightness = 1;
+        else if (brightness > 4)
+            brightness = 4;
+        status.led_brightness = brightness;
         transmitStatus();
+        // strip.setBrightness((byte)(63.75 * status.led_brightness));
     }
     else if (command == CMD_TIME)
     {
-        byte *p;
-        p = (byte *)&status.time;
-        for (byte i = 0; i < sizeof(TimeStatus); i++)
-            p[i] = buffer[i + 1];
+        status.hour = buffer[1];
+        status.minute = buffer[2];
+        status.second = 0;
+        minuteCounter = status.minute * status.hour;
+        if (minuteCounter >= 1440)
+            minuteCounter = 0;
+        else if (minuteCounter < 0)
+            minuteCounter = 0;
 
         transmitStatus();
     }
     else if (command == CMD_BT_PWR)
     {
         // Irreversible
-        digitalWrite(BT_ENABLE, LOW);
+        // digitalWrite(BT_ENABLE, LOW);
     }
     else if (command == CMD_SPEED)
     {
         status.speed = buffer[1];
+        if (status.speed > 2)
+            status.speed = 2;
+        transmitStatus();
+    }
+    else if (command == CMD_THRESHOLD)
+    {
+        status.threshold = buffer[1];
+        if (status.threshold >= 20)
+            status.threshold = 10;
+        transmitStatus();
+    }
+    else if (command == CMD_MAPMIN)
+    {
+        status.mapMin = buffer[1];
+        if (status.mapMin > 15)
+            status.mapMin = 7;
+        transmitStatus();
+    }
+    else if (command == CMD_LED_COUNT)
+    {
+        status.ledCount = buffer[1];
+        updateLedCount();
+        transmitStatus();
     }
     else if (command == CMD_STATUS)
     {
@@ -294,38 +315,48 @@ void transmitStatus()
 {
     status.check = 1;
     byte structSize = sizeof(status);
-    BT.write((byte *)&status, structSize);
-    BT.println();
-    BT.flush();
+    Serial.write((byte *)&status, structSize);
+    Serial.flush();
     status.check = 0;
 }
 
 void toggle_led()
 {
-    status.led_state = (status.led_state + 1) % 2;
-    if (status.led_state == 0)
-        close_led();
-    else
+    if (status.led_state == 1)
         show_led();
+    else
+        close_led();
+}
+
+void updateLedCount()
+{
+    isRunning = false;
+    strip = Adafruit_NeoPixel(status.ledCount, LED_DAT, NEO_GRB + NEO_KHZ800);
+    INCREMENT = 1440.0 / (double)status.ledCount;
+    strip.begin();
+    strip.show();
+    isRunning = true;
 }
 
 void awake_bt()
 {
-    digitalWrite(BT_ENABLE, HIGH);
-    delay(1000);
+    // digitalWrite(BT_ENABLE, HIGH);
+    // delay(1000);
 }
 
 void show_led()
 {
-    for (byte i = 0; i < NUM_LEDS; i++)
+    for (byte v = 0; v < 200; v++)
     {
-        for (byte v = 0; v < 200; v++)
+        for (byte i = 0; i < status.ledCount; i++)
         {
-            strip.setPixelColor(i, v);
-            delay(20);
-            strip.show();
+            strip.setPixelColor(i, 0, 0, v);
         }
+        strip.show();
+        delay(5);
     }
+
+    strip.clear();
     isRunning = true;
 }
 
@@ -333,58 +364,65 @@ void close_led()
 {
     isRunning = false;
 
-    for (byte v = 100; v > 0; v--)
+    for (byte v = 200; v > 0; v--)
     {
-
-        for (byte i = 0; i < NUM_LEDS; i++)
-            strip.setPixelColor(i, v - 1);
-        delay(25);
+        for (byte i = 0; i < status.ledCount; i++)
+        {
+            strip.setPixelColor(i, 0, 0, v - 1);
+        }
         strip.show();
-    }
-}
-
-uint8_t normalize(int value)
-{
-    if (value < 0)
-    {
-        return value + NUM_LEDS;
-    }
-    else if (value >= NUM_LEDS)
-    {
-        return value - NUM_LEDS;
-    }
-    else
-    {
-        return value;
+        delay(5);
     }
 }
 
 void coordinate()
 {
-    double c = (double)status.led_brightness / 4.0;
-    for (byte i = 0; i < NUM_LEDS; i++)
+    const double mapped_t = mapf(minuteCounter, 0.0, 1440.0, 0.0, TWO_PI);
+    const byte max_brightness = (byte)(62 * status.led_brightness);
+    const double threshold = (double)status.threshold / 10.0;
+    const double mapMin = (double)status.mapMin / 10.0;
+    for (byte i = 0; i < status.ledCount; i++)
     {
-        double sinVal = sin(0.004363325 * ((minuteCounter + (i * 48)))) * 1785;
+        double ledVal = (double)i * INCREMENT;
+        double mapped_y = mapf(ledVal, 0.0, 1440 - INCREMENT, 0.0, TWO_PI);
+        double cosVal = cos(mapped_t - mapped_y) + 1;
+        byte rgb = 0;
+        if (cosVal < threshold)
+            rgb = 0;
+        else
+            rgb = (byte)mapf(cosVal, mapMin, 2.0, 1.0, max_brightness);
 
-        if (sinVal > 255)
-            sinVal = 255;
-        if (sinVal < 0)
-            sinVal = 0;
-
-        int a = (int)(sinVal * c);
-        strip.setPixelColor(i, a, a, a);
+        strip.setPixelColor(i, rgb, rgb, rgb);
     }
     strip.show();
 }
 
+double mapf(double val, double in_min, double in_max, double out_min, double out_max)
+{
+    return out_min + ((val - in_min) * (out_max - out_min) / (in_max - in_min));
+}
+// void coordinate()
+// {
+//     for (byte i = 0; i < NUM_LEDS; i++)
+//     {
+//         double sinVal = sin(0.004363325 * ((minuteCounter + (i * 48)))) * 1785;
+
+//         if (sinVal > 255)
+//             sinVal = 255;
+//         if (sinVal < 0)
+//             sinVal = 0;
+
+//         byte val = (byte)(sinVal);
+//         strip.setPixelColor(i, val, val, val);
+//     }
+//     strip.show();
+// }
+
 void test_strip()
 {
-    for (int i = 0; i < NUM_LEDS; i++)
+    for (int i = 0; i < status.ledCount; i++)
     {
-        strip.setPixelColor(i, 255, 255, 255);
-        strip.show();
-        delay(50);
-        strip.setPixelColor(i, 0, 0, 0);
+        strip.setPixelColor(i, 200);
         strip.show();
         delay(50);
     }
@@ -393,7 +431,7 @@ void test_strip()
 void btn_setBrightness()
 {
     status.led_brightness = (status.led_brightness % 4) + 1;
-    coordinate();
+    // strip.setBrightness((byte)(63.75 * status.led_brightness));
 }
 
 void btn_setSpeed()
