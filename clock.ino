@@ -1,40 +1,52 @@
+#define ANALOGBUTTONS_MAX_SIZE 4
 #include "Arduino.h"
+#include "Pins.h"
+#include <RTClib.h>
 #include <Adafruit_NeoPixel.h>
-// #ifdef __AVR__
-// #include <avr/power.h>
-// #endif
 #include <AnalogButtons.h>
+#include <TM1637Display.h>
 
-// #define ARDUINO_RX 7
-// #define ARDUINO_TX 8
-#define BT_ENABLE 9
-// #define BT_ENABLE_INTERRUPT A0
-// SoftwareSerial BT(ARDUINO_RX, ARDUINO_TX);
+#pragma region BLUETOOTH
+SoftwareSerial BT(ARDUINO_RX, ARDUINO_TX);
 #define BUFFER_SIZE 5
 byte buffer[BUFFER_SIZE];
 byte cursor = 0;
 boolean newData = false;
 #define START_MARKER 0x0F
+#pragma endregion
 
+#pragma region TIME
+#define USE_RTC true
+DS1302 rtc(RTC_CE, RTC_SCK, RTC_IO);
 #define TIME_PERIOD 1000
+#pragma endregion
 
 #pragma region LED
-#define LED_DAT 7
 #define NUM_LEDS 96
 #define TWO_PI 6.2831853072
+#define LED_INITIAL_BRIGHTNESS 4 // 1-2-3-4 * 25%
+#define LED_THRESHOLD 10         // Divided by 10
+#define LED_MAP_MIN 10           // Divided by 10
 double INCREMENT = 1440.0 / (double)NUM_LEDS;
-#define LED_THRESHOLD 1
+
+Adafruit_NeoPixel strip = Adafruit_NeoPixel(NUM_LEDS, LED_DAT, NEO_GRB + NEO_KHZ800);
 boolean isRunning = false;
 double minuteCounter = 0;
-Adafruit_NeoPixel strip = Adafruit_NeoPixel(NUM_LEDS, LED_DAT, NEO_GRB + NEO_KHZ800);
 #pragma endregion
 
 #pragma region BUTTONS
-#define ANALOG_PIN A3
-
 AnalogButtons analogButtons(ANALOG_PIN, INPUT);
-Button b1 = Button(360, &btn_setSpeed);
-Button b2 = Button(40, &btn_setBrightness);
+Button b1 = Button(1000, &btn_setSpeed);
+Button b2 = Button(700, &btn_setSpeed);
+Button b3 = Button(400, &btn_setBrightness);
+Button b4 = Button(100, &btn_setBrightness);
+#pragma endregion
+
+#pragma region DISPLAY
+#define BLINK_DELAY 500
+TM1637Display display(DISPLAY_CLK, DISPLAY_DATA);
+boolean isSetMode_hour = false;
+boolean isSetMode_min = false;
 #pragma endregion
 
 /*
@@ -102,40 +114,46 @@ unsigned long lastMillis = 0;
 void setup()
 {
     Serial.begin(9600);
-    // pinMode(BT_ENABLE, OUTPUT);
+
     analogButtons.add(b1);
     analogButtons.add(b2);
+    analogButtons.add(b3);
+    analogButtons.add(b4);
 
-    // pinMode(BT_ENABLE_INTERRUPT, INPUT_PULLUP);
-    pinMode(8, OUTPUT);
-    digitalWrite(8, HIGH);
-    // digitalWrite(BT_ENABLE, HIGH);
-    // attachInterrupt(BT_ENABLE_INTERRUPT, awake_bt, LOW);
+    rtc.begin();
+    DateTime date = rtc.now();
 
     status.check = 0;
     status.led_state = 1;
-    status.led_brightness = 2; // N * 25%
-    status.speed = 0;
-    status.threshold = 10;      // FOR DEBUG
-    status.ledCount = NUM_LEDS; // FOR DEBUG
-    status.mapMin = 7;          // FOR DEBUG
-    status.hour = 12;
-    status.minute = 0;
-    status.second = 0;
+    status.led_brightness = LED_INITIAL_BRIGHTNESS; // N * 25%
+    status.speed = 0;                               // FOR DEBUG
+    status.threshold = LED_THRESHOLD;               // FOR DEBUG
+    status.ledCount = NUM_LEDS;                     // FOR DEBUG
+    status.mapMin = LED_MAP_MIN;                    // FOR DEBUG
+    status.hour = date.hour;
+    status.minute = date.minute;
+    status.second = date.second;
 
     strip.begin();
     strip.setBrightness(255);
     strip.clear();
     strip.show();
 
-    test_strip();
+    led_start_animation();
+    led_stop_animation();
+    strip.clear();
+
     lastMillis = millis();
     isRunning = true;
 }
 
 void loop()
 {
+#if USE_RTC
+    updateSecond_rtc();
+#else
     updateSecond();
+#endif
     analogButtons.check();
     recv();
 }
@@ -178,6 +196,30 @@ void updateSecond()
             if (status.hour == 24)
                 status.hour = 0;
         }
+
+        if (isRunning)
+            coordinate();
+    }
+}
+
+void updateSecond_rtc()
+{
+    unsigned long currentMillis = millis();
+    long gap = currentMillis - lastMillis;
+    if (gap > TIME_PERIOD)
+    {
+        lastMillis = currentMillis;
+        DateTime now = rtc.now();
+        if (status.speed == 1)
+        {
+            now = now + TimeDelta(59);
+        }
+        else if (status.speed == 2)
+        {
+            now = now + TimeDelta(599);
+        }
+
+        minuteCounter = (uint16_t)now.hour * (uint16_t)now.minute;
 
         if (isRunning)
             coordinate();
@@ -258,10 +300,15 @@ void parse_data()
             brightness = 4;
         status.led_brightness = brightness;
         transmitStatus();
-        // strip.setBrightness((byte)(63.75 * status.led_brightness));
     }
     else if (command == CMD_TIME)
     {
+#if USE_RTC
+        DateTime now = rtc.now();
+        now.sethour(buffer[1]);
+        now.setminute(buffer[2]);
+        minuteCounter = now.hour * now.minute;
+#else
         status.hour = buffer[1];
         status.minute = buffer[2];
         status.second = 0;
@@ -270,14 +317,15 @@ void parse_data()
             minuteCounter = 0;
         else if (minuteCounter < 0)
             minuteCounter = 0;
+#endif
 
         transmitStatus();
     }
-    else if (command == CMD_BT_PWR)
-    {
-        // Irreversible
-        // digitalWrite(BT_ENABLE, LOW);
-    }
+    // else if (command == CMD_BT_PWR)
+    // {
+    //     // Irreversible
+    //     // digitalWrite(BT_ENABLE, LOW);
+    // }
     else if (command == CMD_SPEED)
     {
         status.speed = buffer[1];
@@ -288,15 +336,15 @@ void parse_data()
     else if (command == CMD_THRESHOLD)
     {
         status.threshold = buffer[1];
-        if (status.threshold >= 20)
-            status.threshold = 10;
+        if (status.threshold >= 12)
+            status.threshold = 8;
         transmitStatus();
     }
     else if (command == CMD_MAPMIN)
     {
         status.mapMin = buffer[1];
-        if (status.mapMin > 15)
-            status.mapMin = 7;
+        if (status.mapMin > 12)
+            status.mapMin = 8;
         transmitStatus();
     }
     else if (command == CMD_LED_COUNT)
@@ -346,15 +394,7 @@ void awake_bt()
 
 void show_led()
 {
-    for (byte v = 0; v < 200; v++)
-    {
-        for (byte i = 0; i < status.ledCount; i++)
-        {
-            strip.setPixelColor(i, 0, 0, v);
-        }
-        strip.show();
-        delay(5);
-    }
+    led_start_animation();
 
     strip.clear();
     isRunning = true;
@@ -362,17 +402,9 @@ void show_led()
 
 void close_led()
 {
-    isRunning = false;
+    led_stop_animation();
 
-    for (byte v = 200; v > 0; v--)
-    {
-        for (byte i = 0; i < status.ledCount; i++)
-        {
-            strip.setPixelColor(i, 0, 0, v - 1);
-        }
-        strip.show();
-        delay(5);
-    }
+    isRunning = false;
 }
 
 void coordinate()
@@ -401,6 +433,7 @@ double mapf(double val, double in_min, double in_max, double out_min, double out
 {
     return out_min + ((val - in_min) * (out_max - out_min) / (in_max - in_min));
 }
+
 // void coordinate()
 // {
 //     for (byte i = 0; i < NUM_LEDS; i++)
@@ -418,23 +451,53 @@ double mapf(double val, double in_min, double in_max, double out_min, double out
 //     strip.show();
 // }
 
-void test_strip()
+void led_start_animation()
 {
-    for (int i = 0; i < status.ledCount; i++)
+    for (byte v = 0; v < 254; v++)
     {
-        strip.setPixelColor(i, 200);
+        for (byte i = 0; i < status.ledCount; i++)
+        {
+            strip.setPixelColor(i, 0, 0, v);
+        }
         strip.show();
-        delay(50);
+        delay(5);
+    }
+}
+
+void led_stop_animation()
+{
+    for (byte v = 254; v > 0; v--)
+    {
+        for (byte i = 0; i < status.ledCount; i++)
+        {
+            strip.setPixelColor(i, 0, 0, v - 1);
+        }
+        strip.show();
+        delay(5);
     }
 }
 
 void btn_setBrightness()
 {
     status.led_brightness = (status.led_brightness % 4) + 1;
-    // strip.setBrightness((byte)(63.75 * status.led_brightness));
 }
 
 void btn_setSpeed()
+{
+    status.speed++;
+    if (status.speed > 2)
+        status.speed = 0;
+}
+
+void btn_setHour()
+{
+    if (isSetMode_hour == false)
+    {
+        isSetMode_hour = true;
+    }
+}
+
+void btn_setMinute()
 {
     status.speed++;
     if (status.speed > 2)
