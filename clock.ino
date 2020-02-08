@@ -1,10 +1,15 @@
 #define ANALOGBUTTONS_MAX_SIZE 4
-#include "Arduino.h"
-#include "Pins.h"
+#include <Arduino.h>
+#include <SoftwareSerial.h>
 #include <RTClib.h>
 #include <Adafruit_NeoPixel.h>
 #include <AnalogButtons.h>
 #include <TM1637Display.h>
+#include "pins.h"
+
+// #define BLUEOOTH_SETUP
+#define BLUETOOTH_NAME_CMD "AT+NAME=WClock A9F4"
+#define USE_RTC
 
 #pragma region BLUETOOTH
 SoftwareSerial BT(ARDUINO_RX, ARDUINO_TX);
@@ -16,9 +21,14 @@ boolean newData = false;
 #pragma endregion
 
 #pragma region TIME
-#define USE_RTC true
 DS1302 rtc(RTC_CE, RTC_SCK, RTC_IO);
 #define TIME_PERIOD 1000
+
+#ifdef USE_RTC
+DateTime lastUpdate;
+#else
+unsigned long lastMillis = 0;
+#endif
 #pragma endregion
 
 #pragma region LED
@@ -109,19 +119,45 @@ typedef struct Status
 #pragma pop()
 
 Status status;
-unsigned long lastMillis = 0;
 
 void setup()
 {
     Serial.begin(9600);
+    BT.begin(38400);
+    delay(1000);
+#ifdef BLUEOOTH_SETUP
+    bt_setup();
+#else
+    while (BT.available())
+        Serial.print(BT.readString());
+    BT.println("AT+E=0");
+    if (BT.available())
+    {
+        while (BT.available())
+            Serial.print(BT.readString());
+
+        Serial.println();
+    }
+    delay(1000);
+    BT.println("AT+NOTIFY=0");
+    if (BT.available())
+    {
+        while (BT.available())
+            Serial.print(BT.readString());
+
+        Serial.println();
+    }
+    delay(1000);
+    BT.println("AT+FORCEC=0");
+    while (BT.available())
+        Serial.print(BT.read());
+    delay(1000);
+#endif
 
     analogButtons.add(b1);
     analogButtons.add(b2);
     analogButtons.add(b3);
     analogButtons.add(b4);
-
-    rtc.begin();
-    DateTime date = rtc.now();
 
     status.check = 0;
     status.led_state = 1;
@@ -130,9 +166,17 @@ void setup()
     status.threshold = LED_THRESHOLD;               // FOR DEBUG
     status.ledCount = NUM_LEDS;                     // FOR DEBUG
     status.mapMin = LED_MAP_MIN;                    // FOR DEBUG
-    status.hour = date.hour;
-    status.minute = date.minute;
-    status.second = date.second;
+
+#ifdef USE_RTC
+    rtc.begin();
+    Serial.println(rtc.now().second());
+    delay(2000);
+    Serial.println(rtc.now().second());
+#else
+    status.hour = 12;
+    status.minute = 0;
+    status.second = 0;
+#endif
 
     strip.begin();
     strip.setBrightness(255);
@@ -143,13 +187,15 @@ void setup()
     led_stop_animation();
     strip.clear();
 
+#ifndef USE_RTC
     lastMillis = millis();
+#endif
     isRunning = true;
 }
 
 void loop()
 {
-#if USE_RTC
+#ifdef USE_RTC
     updateSecond_rtc();
 #else
     updateSecond();
@@ -158,6 +204,7 @@ void loop()
     recv();
 }
 
+#ifndef USE_RTC
 void updateSecond()
 {
     unsigned long currentMillis = millis();
@@ -201,54 +248,39 @@ void updateSecond()
             coordinate();
     }
 }
-
+#else
 void updateSecond_rtc()
 {
-    unsigned long currentMillis = millis();
-    long gap = currentMillis - lastMillis;
-    if (gap > TIME_PERIOD)
+    DateTime now = rtc.now();
+    TimeDelta diff = now - lastUpdate;
+    if (status.speed == 1)
     {
-        lastMillis = currentMillis;
-        DateTime now = rtc.now();
-        if (status.speed == 1)
-        {
-            now = now + TimeDelta(59);
-        }
-        else if (status.speed == 2)
-        {
-            now = now + TimeDelta(599);
-        }
-
-        minuteCounter = (uint16_t)now.hour * (uint16_t)now.minute;
-
-        if (isRunning)
-            coordinate();
+        // Add 1 minute
+        now = now + TimeDelta(diff.totalseconds() * 60);
     }
-}
-
-void setupBLE()
-{
-    Serial.println("AT+ROLE0");
-    delay(100);
-    // Flush buffer
-    while (Serial.available())
+    else if (status.speed == 2)
     {
+        // Add 10 minute
+        now = now + TimeDelta(diff.totalseconds() * 600);
     }
-    delay(500);
-    // sendCommand("AT+NAMEClock");
-    Serial.print("AT+NAME");
-    Serial.println("WClock A9F54");
-    delay(2000);
+
+    minuteCounter = (uint16_t)now.hour() * (uint16_t)now.minute();
+
+    if (isRunning)
+        coordinate();
 }
+#endif
 
 void recv()
 {
     static boolean recvInProgress = false;
     static byte ndx = 0;
     byte rc;
-    while (Serial.available() > 0 && newData == false)
+    while (BT.available() > 0 && newData == false)
     {
-        rc = Serial.read();
+        rc = BT.read();
+        Serial.write(rc);
+        Serial.println();
         if (recvInProgress == true)
         {
             buffer[ndx] = rc;
@@ -281,7 +313,7 @@ void check_data()
 void parse_data()
 {
     byte command = buffer[0];
-
+    Serial.println(command);
     if (command == CMD_POWER)
     {
         if (status.led_state == 0)
@@ -303,11 +335,11 @@ void parse_data()
     }
     else if (command == CMD_TIME)
     {
-#if USE_RTC
+#ifdef USE_RTC
         DateTime now = rtc.now();
         now.sethour(buffer[1]);
         now.setminute(buffer[2]);
-        minuteCounter = now.hour * now.minute;
+        minuteCounter = (double)now.hour() * (double)now.minute();
 #else
         status.hour = buffer[1];
         status.minute = buffer[2];
@@ -363,8 +395,8 @@ void transmitStatus()
 {
     status.check = 1;
     byte structSize = sizeof(status);
-    Serial.write((byte *)&status, structSize);
-    Serial.flush();
+    BT.write((byte *)&status, structSize);
+    BT.flush();
     status.check = 0;
 }
 
@@ -503,3 +535,68 @@ void btn_setMinute()
     if (status.speed > 2)
         status.speed = 0;
 }
+
+#ifdef BLUEOOTH_SETUP
+void bt_setup()
+{
+    // Set AT Mode
+    BT.println("AT+FORCEC=1");
+    delay(10);
+    BT.println("AT+SAVE");
+    delay(100);
+    BT.println("AT+RESET");
+    delay(2000);
+
+    BT.println("AT+SLEEP=0");
+    delay(10);
+    BT.println("AT+SAVE");
+    delay(100);
+
+    // Set module BT name
+    BT.println(BLUETOOTH_NAME_CMD);
+    delay(10);
+    BT.println("AT+SAVE");
+    delay(100);
+    BT.println("AT+RESET");
+    delay(3000);
+
+    // Disable echo
+    BT.println("AT+E=0");
+    delay(10);
+    BT.println("AT+SAVE");
+    delay(100);
+
+    // Set broadcast parameters
+    // BT.println("AT+BTPARAM=3200,70,90,0,200");
+    // delay(10);
+    // BT.println("AT+SAVE");
+    // delay(100);
+
+    // Disable notify
+    BT.println("AT+NOTIFY=0");
+    delay(10);
+    BT.println("AT+SAVE");
+    delay(100);
+
+    // Set automatic pairing
+    BT.println("AT+PAIRM=2");
+    delay(10);
+    BT.println("AT+SAVE");
+    delay(100);
+    BT.println("AT+RESET");
+    delay(3000);
+
+    // Set peripheral mode
+    BT.println("AT+ROLE=2");
+    delay(10);
+    BT.println("AT+SAVE");
+    delay(100);
+    BT.println("AT+RESET");
+    delay(3000);
+
+    BT.flush();
+    while (1)
+    {
+    }
+}
+#endif
