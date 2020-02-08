@@ -3,9 +3,7 @@
         {
             "name": "Win32",
             "includePath": [
-                "C:\\Users\\berka\\Documents\\Arduino\\libraries\\TM1637_Driver\\src",
-                "${workspaceFolder}/**",
-                "${workspaceRoot}",
+                "C:\\Users\\berka\\Documents\\Arduino\\libraries\\TM1637",
                 "C:\\Users\\berka\\Documents\\Arduino\\libraries\\RTCLib_by_NeiroN",
                 "C:\\Users\\berka\\AppData\\Local\\Arduino15\\packages\\MiniCore\\hardware\\avr\\2.0.3\\**",
                 "C:\\Users\\berka\\Documents\\Arduino\\libraries\\Adafruit_NeoPixel"

@@ -1,14 +1,16 @@
 
+
 #define ANALOGBUTTONS_MAX_SIZE 4
-#include <Arduino.h>
 #include <SoftwareSerial.h>
 #include <RTClib.h>
 #include <Adafruit_NeoPixel.h>
-#include <TM1637.h>
+#include <TM1637Display.h>
 #include "AnalogButtons.h"
-#include "pins.h"
+#include "Pins.h"
+#include "functions.h"
 
 // #define BLUEOOTH_SETUP
+// #define BUTTON_SETUP
 #define BLUETOOTH_NAME_CMD "AT+NAME=WClock A9F4"
 #define USE_RTC
 
@@ -33,8 +35,7 @@ unsigned long lastMillis = 0;
 #pragma endregion
 
 #pragma region LED
-#define NUM_LEDS 96
-#define TWO_PI 6.2831853072
+#define NUM_LEDS 216
 #define LED_INITIAL_BRIGHTNESS 4 // 1-2-3-4 * 25%
 #define LED_THRESHOLD 10         // Divided by 10
 #define LED_MAP_MIN 10           // Divided by 10
@@ -47,15 +48,14 @@ double minuteCounter = 0;
 
 #pragma region BUTTONS
 AnalogButtons analogButtons(ANALOG_PIN, INPUT);
-Button b1 = Button(1000, &btn_setSpeed);
-Button b2 = Button(700, &btn_setSpeed);
-Button b3 = Button(400, &btn_setBrightness);
-Button b4 = Button(100, &btn_setBrightness);
+Button b1 = Button(0, &btn_setHour);
+Button b2 = Button(320, &btn_setMinute);
+Button b3 = Button(485, &btn_setBrightness, &btn_setSpeed, 2000, 4000);
+Button b4 = Button(588, &btn_setTemperature, &btn_setLedCount, 2000, 1000);
 #pragma endregion
 
 #pragma region DISPLAY
-#define BLINK_DELAY 500
-TM1637 display(DISPLAY_CLK, DISPLAY_DATA);
+TM1637Display display(DISPLAY_CLK, DISPLAY_DATA);
 boolean isSetMode_hour = false;
 boolean isSetMode_min = false;
 #pragma endregion
@@ -98,9 +98,9 @@ Get Status
 #define CMD_BT_PWR 0x04
 #define CMD_NAME 0x05
 #define CMD_STATUS 0x06
-#define CMD_SPEED 0x07     // FOR DEBUG
-#define CMD_MAPMIN 0x08    // FOR DEBUG
-#define CMD_THRESHOLD 0x09 // FOR DEBUG
+#define CMD_SPEED 0x07  // FOR DEBUG
+#define CMD_MAPMIN 0x08 // FOR DEBUG
+#define CMD_TEMPERATURE 0x09
 #define CMD_LED_COUNT 0x10 // FOR DEBUG
 
 #pragma pack(1)
@@ -110,10 +110,9 @@ typedef struct Status
     uint8_t led_state;
     uint8_t led_brightness;
     uint8_t led_temperature;
-    uint8_t speed;     // FOR DEBUG
-    uint8_t threshold; // FOR DEBUG
-    uint8_t mapMin;    // FOR DEBUG
-    uint8_t ledCount;  // FOR DEBUG
+    uint8_t speed;    // FOR DEBUG
+    uint8_t mapMin;   // FOR DEBUG
+    uint8_t ledCount; // FOR DEBUG
     uint8_t hour;
     uint8_t minute;
     uint16_t second;
@@ -124,35 +123,25 @@ Status status;
 
 void setup()
 {
-    Serial.begin(9600);
+    // Serial.begin(9600);
     BT.begin(38400);
-    delay(1000);
+    delay(500);
 #ifdef BLUEOOTH_SETUP
     bt_setup();
 #else
     while (BT.available())
-        Serial.print(BT.readString());
+        BT.read();
     BT.println("AT+E=0");
-    if (BT.available())
-    {
-        while (BT.available())
-            Serial.print(BT.readString());
-
-        Serial.println();
-    }
+    while (BT.available())
+        BT.read();
     delay(1000);
     BT.println("AT+NOTIFY=0");
-    if (BT.available())
-    {
-        while (BT.available())
-            Serial.print(BT.readString());
-
-        Serial.println();
-    }
+    while (BT.available())
+        BT.read();
     delay(1000);
     BT.println("AT+FORCEC=0");
     while (BT.available())
-        Serial.print(BT.read());
+        BT.read();
     delay(3000);
 #endif
 
@@ -164,16 +153,13 @@ void setup()
     status.check = 0;
     status.led_state = 1;
     status.led_brightness = LED_INITIAL_BRIGHTNESS; // N * 25%
-    status.speed = 0;                               // FOR DEBUG
-    status.threshold = LED_THRESHOLD;               // FOR DEBUG
-    status.ledCount = NUM_LEDS;                     // FOR DEBUG
-    status.mapMin = LED_MAP_MIN;                    // FOR DEBUG
+    status.led_temperature = 3;
+    status.speed = 0;            // FOR DEBUG
+    status.ledCount = NUM_LEDS;  // FOR DEBUG
+    status.mapMin = LED_MAP_MIN; // FOR DEBUG
 
 #ifdef USE_RTC
     rtc.begin();
-    Serial.println(rtc.now().second());
-    delay(2000);
-    Serial.println(rtc.now().second());
 #else
     status.hour = 12;
     status.minute = 0;
@@ -203,6 +189,9 @@ void loop()
     updateSecond();
 #endif
     analogButtons.check();
+#ifdef BUTTON_SETUP
+    btn_setup();
+#endif
     recv();
 }
 
@@ -319,8 +308,8 @@ void parse_data()
             status.led_state = 1;
         else
             status.led_state = 0;
-        transmitStatus();
         toggle_led();
+        transmitStatus();
     }
     else if (command == CMD_BRIGHTNESS)
     {
@@ -370,11 +359,11 @@ void parse_data()
             status.speed = 2;
         transmitStatus();
     }
-    else if (command == CMD_THRESHOLD)
+    else if (command == CMD_TEMPERATURE)
     {
-        status.threshold = buffer[1];
-        if (status.threshold >= 12)
-            status.threshold = 8;
+        status.led_temperature = buffer[1];
+        if (status.led_temperature > 3)
+            status.led_temperature = 3;
         transmitStatus();
     }
     else if (command == CMD_MAPMIN)
@@ -447,21 +436,47 @@ void close_led()
 void coordinate()
 {
     const double mapped_t = mapf(minuteCounter, 0.0, 1440.0, 0.0, TWO_PI);
-    const byte max_brightness = (byte)(62 * status.led_brightness);
-    const double threshold = (double)status.threshold / 10.0;
+    const byte max_brightness = (byte)(63 * status.led_brightness);
     const double mapMin = (double)status.mapMin / 10.0;
     for (byte i = 0; i < status.ledCount; i++)
     {
         double ledVal = (double)i * INCREMENT;
         double mapped_y = mapf(ledVal, 0.0, 1440 - INCREMENT, 0.0, TWO_PI);
         double cosVal = cos(mapped_t - mapped_y) + 1;
-        byte rgb = 0;
-        if (cosVal < threshold)
-            rgb = 0;
+        if (cosVal < LED_THRESHOLD)
+        {
+            strip.setPixelColor(i, 0, 0, 0);
+        }
         else
-            rgb = (byte)mapf(cosVal, mapMin, 2.0, 1.0, max_brightness);
-
-        strip.setPixelColor(i, rgb, rgb, rgb);
+        {
+            double rgb = mapf(cosVal, mapMin, 2.0, 1.0, max_brightness);
+            const byte red = (byte)rgb;
+            byte green = 255;
+            byte blue = 255;
+            if (status.led_temperature == 0)
+            {
+                green = (byte)(rgb * 0.42);
+                blue = 0;
+            }
+            else if (status.led_temperature == 1)
+            {
+                green = (byte)(rgb * 0.7);
+                blue = (byte)(rgb * 0.42);
+            }
+            else if (status.led_temperature == 2)
+            {
+                green = (byte)(rgb * 0.8);
+                blue = (byte)(rgb * 0.6);
+                /* code */
+            }
+            else if (status.led_temperature == 3)
+            {
+                green = (byte)(rgb);
+                blue = (byte)(rgb);
+                /* code */
+            }
+            strip.setPixelColor(i, red, green, blue);
+        }
     }
     strip.show();
 }
@@ -490,7 +505,7 @@ double mapf(double val, double in_min, double in_max, double out_min, double out
 
 void led_start_animation()
 {
-    for (byte v = 0; v < 254; v++)
+    for (byte v = 0; v < 200; v++)
     {
         for (byte i = 0; i < status.ledCount; i++)
         {
@@ -503,7 +518,7 @@ void led_start_animation()
 
 void led_stop_animation()
 {
-    for (byte v = 254; v > 0; v--)
+    for (byte v = 200; v > 0; v--)
     {
         for (byte i = 0; i < status.ledCount; i++)
         {
@@ -517,28 +532,100 @@ void led_stop_animation()
 void btn_setBrightness()
 {
     status.led_brightness = (status.led_brightness % 4) + 1;
+
+    if (isSetMode_hour || isSetMode_min)
+    {
+        isSetMode_hour = false;
+        isSetMode_min = false;
+        display.clear();
+        display.setBrightness(5, false);
+    }
 }
 
 void btn_setSpeed()
 {
-    status.speed++;
-    if (status.speed > 2)
-        status.speed = 0;
+    status.speed = (status.speed + 1) % 3;
+}
+
+void btn_setTemperature()
+{
+    status.led_temperature = (status.led_temperature + 1) % 4;
+
+    if (isSetMode_hour || isSetMode_min)
+    {
+        isSetMode_hour = false;
+        isSetMode_min = false;
+        display.clear();
+        display.setBrightness(5, false);
+    }
+}
+
+void btn_setLedCount()
+{
+    status.ledCount++;
+    if (status.ledCount == 255)
+        status.ledCount = 200;
+    updateLedCount();
 }
 
 void btn_setHour()
 {
     if (isSetMode_hour == false)
     {
-        isSetMode_hour = true;
+        if (isSetMode_min == true)
+        {
+            // Decrement minute
+            DateTime now = rtc.now();
+            now = now - TimeDelta(0, 0, 1, 0);
+            rtc.adjust(now);
+            display.showNumberDec((now.hour() * 1000) + now.minute());
+        }
+        else
+        {
+            isSetMode_hour = true;
+            display.setBrightness(5);
+            DateTime now = rtc.now();
+            display.showNumberDec((now.hour() * 1000) + now.minute());
+        }
+    }
+    else
+    {
+        // Decrement hour
+        DateTime now = rtc.now();
+        now = now - TimeDelta(0, 1, 0, 0);
+        rtc.adjust(now);
+        display.showNumberDec((now.hour() * 1000) + now.minute());
     }
 }
 
 void btn_setMinute()
 {
-    status.speed++;
-    if (status.speed > 2)
-        status.speed = 0;
+    if (isSetMode_min == false)
+    {
+        if (isSetMode_hour == true)
+        {
+            // Increment hour
+            DateTime now = rtc.now();
+            now = now + TimeDelta(0, 1, 0, 0);
+            rtc.adjust(now);
+            display.showNumberDec((now.hour() * 1000) + now.minute());
+        }
+        else
+        {
+            isSetMode_min = true;
+            display.setBrightness(5);
+            DateTime now = rtc.now();
+            display.showNumberDec((now.hour() * 1000) + now.minute());
+        }
+    }
+    else
+    {
+        // Increment minute
+        DateTime now = rtc.now();
+        now = now + TimeDelta(0, 0, 1, 0);
+        rtc.adjust(now);
+        display.showNumberDec((now.hour() * 1000) + now.minute());
+    }
 }
 
 #ifdef BLUEOOTH_SETUP
@@ -603,5 +690,14 @@ void bt_setup()
     while (1)
     {
     }
+}
+#endif
+
+#ifdef BUTTON_SETUP
+void btn_setup()
+{
+    unsigned int value = analogRead(ANALOG_PIN);
+    Serial.println(value);
+    delay(250);
 }
 #endif

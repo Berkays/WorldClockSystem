@@ -1,22 +1,5 @@
-/*
- AnalogButtons.h - Multiple buttons on one pin library
- Copyright (c) 2014 Roberto Lo Giacco.
-
- This program is free software: you can redistribute it and/or modify
- it under the terms of the GNU Lesser General Public License as 
- published by the Free Software Foundation, either version 3 of the 
- License, or (at your option) any later version.
-
- This program is distributed in the hope that it will be useful,
- but WITHOUT ANY WARRANTY; without even the implied warranty of
- MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the
- GNU General Public License for more details.
-
- You should have received a copy of the GNU General Public License
- along with this program.  If not, see <http://www.gnu.org/licenses/>.
- */
-#ifndef ANALOGBUTTONS_H_
-#define ANALOGBUTTONS_H_
+#ifndef __ANALOGBUTTONS_H
+#define __ANALOGBUTTONS_H
 
 /*
  AnalogButtons
@@ -40,14 +23,14 @@
  Arduino Playground library collection.
 
  */
-// #if defined(ARDUINO) && ARDUINO >= 100
-// #include "Arduino.h"
-// #else
-// #include "WProgram.h"
-// #endif
+#if defined(ARDUINO) && ARDUINO >= 100
+#include "Arduino.h"
+#else
+#include "WProgram.h"
+#endif
 
 #ifndef ANALOGBUTTONS_MAX_SIZE
-#define ANALOGBUTTONS_MAX_SIZE 8
+#define ANALOGBUTTONS_MAX_SIZE 4
 #endif
 
 #ifndef ANALOGBUTTONS_SAMPLING_INTERVAL
@@ -108,11 +91,11 @@ private:
     Button *debounceButton;
 
 public:
-    AnalogButtons(uint8_t pin, uint8_t mode = INPUT, uint16_t debounce = 5, uint8_t margin = 10);
+    AnalogButtons(uint8_t pin, uint8_t mode = INPUT, uint16_t debounce = 5, uint8_t margin = 70);
 
     void add(Button button);
 
     void check();
 };
 
-#endif // ANALOGBUTTONS_H_
+#endif
