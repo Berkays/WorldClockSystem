@@ -4,5 +4,5 @@
     "sketch": "clock.ino",
     "programmer": "AVRISP mkII",
     "output": "./build",
-    "configuration": "bootloader=uart0,variant=modelP,BOD=2v7,LTO=Os,clock=16MHz_external"
+    "configuration": "bootloader=uart0,variant=modelP,BOD=1v8,LTO=Os_flto,clock=16MHz_external"
 }

@@ -1,10 +1,11 @@
+
 #define ANALOGBUTTONS_MAX_SIZE 4
 #include <Arduino.h>
 #include <SoftwareSerial.h>
 #include <RTClib.h>
 #include <Adafruit_NeoPixel.h>
-#include <AnalogButtons.h>
-#include <TM1637Display.h>
+#include <TM1637.h>
+#include "AnalogButtons.h"
 #include "pins.h"
 
 // #define BLUEOOTH_SETUP
@@ -54,7 +55,7 @@ Button b4 = Button(100, &btn_setBrightness);
 
 #pragma region DISPLAY
 #define BLINK_DELAY 500
-TM1637Display display(DISPLAY_CLK, DISPLAY_DATA);
+TM1637 display(DISPLAY_CLK, DISPLAY_DATA);
 boolean isSetMode_hour = false;
 boolean isSetMode_min = false;
 #pragma endregion
@@ -108,6 +109,7 @@ typedef struct Status
     uint8_t check;
     uint8_t led_state;
     uint8_t led_brightness;
+    uint8_t led_temperature;
     uint8_t speed;     // FOR DEBUG
     uint8_t threshold; // FOR DEBUG
     uint8_t mapMin;    // FOR DEBUG
@@ -151,7 +153,7 @@ void setup()
     BT.println("AT+FORCEC=0");
     while (BT.available())
         Serial.print(BT.read());
-    delay(1000);
+    delay(3000);
 #endif
 
     analogButtons.add(b1);
@@ -279,8 +281,6 @@ void recv()
     while (BT.available() > 0 && newData == false)
     {
         rc = BT.read();
-        Serial.write(rc);
-        Serial.println();
         if (recvInProgress == true)
         {
             buffer[ndx] = rc;
@@ -313,7 +313,6 @@ void check_data()
 void parse_data()
 {
     byte command = buffer[0];
-    Serial.println(command);
     if (command == CMD_POWER)
     {
         if (status.led_state == 0)
@@ -337,8 +336,14 @@ void parse_data()
     {
 #ifdef USE_RTC
         DateTime now = rtc.now();
-        now.sethour(buffer[1]);
-        now.setminute(buffer[2]);
+        byte hour = buffer[1];
+        byte minute = buffer[2];
+        if (hour > 24)
+            hour = 0;
+        if (minute > 60)
+            minute = 0;
+        now.sethour(hour);
+        now.setminute(minute);
         minuteCounter = (double)now.hour() * (double)now.minute();
 #else
         status.hour = buffer[1];
