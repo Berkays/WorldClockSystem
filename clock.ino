@@ -1,9 +1,12 @@
 
-
 #define ANALOGBUTTONS_MAX_SIZE 4
+
 #include <SoftwareSerial.h>
-#include <RTClib.h>
+#include <DS1302.h>
 #include <Adafruit_NeoPixel.h>
+#ifdef __AVR__
+#include <avr/power.h> // Required for 16 MHz Adafruit Trinket
+#endif
 #include <TM1637Display.h>
 #include "AnalogButtons.h"
 #include "Pins.h"
@@ -11,7 +14,7 @@
 
 // #define BLUEOOTH_SETUP
 // #define BUTTON_SETUP
-#define BLUETOOTH_NAME_CMD "AT+NAME=WClock A9F4"
+// #define BLUETOOTH_NAME_CMD F("AT+NAME=WClock A9F4")
 #define USE_RTC
 
 #pragma region BLUETOOTH
@@ -24,24 +27,23 @@ boolean newData = false;
 #pragma endregion
 
 #pragma region TIME
-DS1302 rtc(RTC_CE, RTC_SCK, RTC_IO);
-#define TIME_PERIOD 1000
+DS1302 rtc(RTC_CE, RTC_IO, RTC_SCK);
+#define TIME_PERIOD 2000
 
+unsigned long lastMillis = 0;
 #ifdef USE_RTC
 DateTime lastUpdate;
-#else
-unsigned long lastMillis = 0;
 #endif
 #pragma endregion
 
 #pragma region LED
-#define NUM_LEDS 216
-#define LED_INITIAL_BRIGHTNESS 4 // 1-2-3-4 * 25%
-#define LED_THRESHOLD 10         // Divided by 10
+#define NUM_LEDS 200
+#define LED_INITIAL_BRIGHTNESS 2 // 1-2-3-4 * 25%
+#define LED_THRESHOLD 1          // Divided by 10
 #define LED_MAP_MIN 10           // Divided by 10
 double INCREMENT = 1440.0 / (double)NUM_LEDS;
 
-Adafruit_NeoPixel strip = Adafruit_NeoPixel(NUM_LEDS, LED_DAT, NEO_GRB + NEO_KHZ800);
+Adafruit_NeoPixel strip(NUM_LEDS, LED_DAT, NEO_GRB + NEO_KHZ800);
 boolean isRunning = false;
 double minuteCounter = 0;
 #pragma endregion
@@ -142,7 +144,7 @@ void setup()
     BT.println("AT+FORCEC=0");
     while (BT.available())
         BT.read();
-    delay(3000);
+    delay(2000);
 #endif
 
     analogButtons.add(b1);
@@ -159,30 +161,31 @@ void setup()
     status.mapMin = LED_MAP_MIN; // FOR DEBUG
 
 #ifdef USE_RTC
-    rtc.begin();
+    rtc.writeProtect(false);
+    rtc.halt(false);
 #else
     status.hour = 12;
     status.minute = 0;
     status.second = 0;
 #endif
-
     strip.begin();
     strip.setBrightness(255);
-    strip.clear();
     strip.show();
 
     led_start_animation();
     led_stop_animation();
     strip.clear();
 
-#ifndef USE_RTC
-    lastMillis = millis();
+#ifdef USE_RTC
+    lastUpdate = rtc.time();
 #endif
+    lastMillis = millis();
     isRunning = true;
 }
 
 void loop()
 {
+    analogButtons.check();
 #ifdef USE_RTC
     updateSecond_rtc();
 #else
@@ -242,23 +245,30 @@ void updateSecond()
 #else
 void updateSecond_rtc()
 {
-    DateTime now = rtc.now();
-    TimeDelta diff = now - lastUpdate;
-    if (status.speed == 1)
+    unsigned long currentMillis = millis();
+    long gap = currentMillis - lastMillis;
+    if (gap > TIME_PERIOD)
     {
-        // Add 1 minute
-        now = now + TimeDelta(diff.totalseconds() * 60);
-    }
-    else if (status.speed == 2)
-    {
-        // Add 10 minute
-        now = now + TimeDelta(diff.totalseconds() * 600);
-    }
+        lastMillis = currentMillis;
+        DateTime now = rtc.time();
+        TimeDelta diff = now - lastUpdate;
+        if (status.speed == 1)
+        {
+            // Add 1 minute
+            now = now + TimeDelta(diff.totalseconds() * 60);
+        }
+        else if (status.speed == 2)
+        {
+            // Add 10 minute
+            now = now + TimeDelta(diff.totalseconds() * 600);
+        }
+        lastUpdate = now;
+        rtc.time(now);
+        minuteCounter = (uint16_t)now.hour() * (uint16_t)now.minute();
 
-    minuteCounter = (uint16_t)now.hour() * (uint16_t)now.minute();
-
-    if (isRunning)
-        coordinate();
+        if (isRunning)
+            coordinate();
+    }
 }
 #endif
 
@@ -324,7 +334,7 @@ void parse_data()
     else if (command == CMD_TIME)
     {
 #ifdef USE_RTC
-        DateTime now = rtc.now();
+        DateTime now = rtc.time();
         byte hour = buffer[1];
         byte minute = buffer[2];
         if (hour > 24)
@@ -575,25 +585,25 @@ void btn_setHour()
         if (isSetMode_min == true)
         {
             // Decrement minute
-            DateTime now = rtc.now();
+            DateTime now = rtc.time();
             now = now - TimeDelta(0, 0, 1, 0);
-            rtc.adjust(now);
+            rtc.time(now);
             display.showNumberDec((now.hour() * 1000) + now.minute());
         }
         else
         {
             isSetMode_hour = true;
             display.setBrightness(5);
-            DateTime now = rtc.now();
+            DateTime now = rtc.time();
             display.showNumberDec((now.hour() * 1000) + now.minute());
         }
     }
     else
     {
         // Decrement hour
-        DateTime now = rtc.now();
+        DateTime now = rtc.time();
         now = now - TimeDelta(0, 1, 0, 0);
-        rtc.adjust(now);
+        rtc.time(now);
         display.showNumberDec((now.hour() * 1000) + now.minute());
     }
 }
@@ -605,25 +615,25 @@ void btn_setMinute()
         if (isSetMode_hour == true)
         {
             // Increment hour
-            DateTime now = rtc.now();
+            DateTime now = rtc.time();
             now = now + TimeDelta(0, 1, 0, 0);
-            rtc.adjust(now);
+            rtc.time(now);
             display.showNumberDec((now.hour() * 1000) + now.minute());
         }
         else
         {
             isSetMode_min = true;
-            display.setBrightness(5);
-            DateTime now = rtc.now();
+            // display.setBrightness(5);
+            DateTime now = rtc.time();
             display.showNumberDec((now.hour() * 1000) + now.minute());
         }
     }
     else
     {
         // Increment minute
-        DateTime now = rtc.now();
+        DateTime now = rtc.time();
         now = now + TimeDelta(0, 0, 1, 0);
-        rtc.adjust(now);
+        rtc.time(now);
         display.showNumberDec((now.hour() * 1000) + now.minute());
     }
 }
