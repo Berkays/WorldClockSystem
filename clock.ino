@@ -3,13 +3,10 @@
 
 #include <SoftwareSerial.h>
 #include <DS1302.h>
-#include <Adafruit_NeoPixel.h>
-#ifdef __AVR__
-#include <avr/power.h> // Required for 16 MHz Adafruit Trinket
-#endif
 #include <TM1637Display.h>
 #include "AnalogButtons.h"
 #include "Pins.h"
+#include "leds.h"
 #include "functions.h"
 
 // #define BLUEOOTH_SETUP
@@ -37,23 +34,22 @@ DateTime lastUpdate;
 #pragma endregion
 
 #pragma region LED
-#define NUM_LEDS 200
+#define NUM_LEDS 125
 #define LED_INITIAL_BRIGHTNESS 2 // 1-2-3-4 * 25%
 #define LED_THRESHOLD 1          // Divided by 10
-#define LED_MAP_MIN 10           // Divided by 10
+#define LED_MAP_MIN 1            // Divided by 10
 double INCREMENT = 1440.0 / (double)NUM_LEDS;
 
-Adafruit_NeoPixel strip(NUM_LEDS, LED_DAT, NEO_GRB + NEO_KHZ800);
 boolean isRunning = false;
 double minuteCounter = 0;
 #pragma endregion
 
 #pragma region BUTTONS
 AnalogButtons analogButtons(ANALOG_PIN, INPUT);
-Button b1 = Button(0, &btn_setHour);
-Button b2 = Button(320, &btn_setMinute);
-Button b3 = Button(485, &btn_setBrightness, &btn_setSpeed, 2000, 4000);
-Button b4 = Button(588, &btn_setTemperature, &btn_setLedCount, 2000, 1000);
+Button b1 = Button(0, &btn_setSpeed);
+Button b2 = Button(320, &btn_setLedCount);
+Button b3 = Button(485, &btn_setBrightness);
+Button b4 = Button(588, &btn_setTemperature);
 #pragma endregion
 
 #pragma region DISPLAY
@@ -168,13 +164,12 @@ void setup()
     status.minute = 0;
     status.second = 0;
 #endif
-    strip.begin();
-    strip.setBrightness(255);
-    strip.show();
-
-    led_start_animation();
-    led_stop_animation();
-    strip.clear();
+    ledsetup();
+    colorWipe(0, 0, 255, 0);
+    colorWipe(255, 0, 0, 0);
+    colorWipe(0, 255, 0, 0);
+    // led_start_animation();
+    // led_stop_animation();
 
 #ifdef USE_RTC
     lastUpdate = rtc.time();
@@ -245,30 +240,24 @@ void updateSecond()
 #else
 void updateSecond_rtc()
 {
-    unsigned long currentMillis = millis();
-    long gap = currentMillis - lastMillis;
-    if (gap > TIME_PERIOD)
+    DateTime now = rtc.time();
+    TimeDelta diff = now - lastUpdate;
+    if (status.speed == 1)
     {
-        lastMillis = currentMillis;
-        DateTime now = rtc.time();
-        TimeDelta diff = now - lastUpdate;
-        if (status.speed == 1)
-        {
-            // Add 1 minute
-            now = now + TimeDelta(diff.totalseconds() * 60);
-        }
-        else if (status.speed == 2)
-        {
-            // Add 10 minute
-            now = now + TimeDelta(diff.totalseconds() * 600);
-        }
-        lastUpdate = now;
-        rtc.time(now);
-        minuteCounter = (uint16_t)now.hour() * (uint16_t)now.minute();
-
-        if (isRunning)
-            coordinate();
+        // Add 1 minute
+        now = now + TimeDelta(diff.totalseconds() * 60);
     }
+    else if (status.speed == 2)
+    {
+        // Add 10 minute
+        now = now + TimeDelta(diff.totalseconds() * 600);
+    }
+    lastUpdate = now;
+    rtc.time(now);
+    minuteCounter = (uint16_t)now.hour() * (uint16_t)now.minute();
+
+    if (isRunning)
+        coordinate();
 }
 #endif
 
@@ -415,10 +404,9 @@ void toggle_led()
 void updateLedCount()
 {
     isRunning = false;
-    strip = Adafruit_NeoPixel(status.ledCount, LED_DAT, NEO_GRB + NEO_KHZ800);
+    // strip = Adafruit_NeoPixel(status.ledCount, LED_DAT, NEO_GRB + NEO_KHZ800);
     INCREMENT = 1440.0 / (double)status.ledCount;
-    strip.begin();
-    strip.show();
+
     isRunning = true;
 }
 
@@ -432,7 +420,7 @@ void show_led()
 {
     led_start_animation();
 
-    strip.clear();
+    showColor(0, 0, 0);
     isRunning = true;
 }
 
@@ -445,6 +433,7 @@ void close_led()
 
 void coordinate()
 {
+    byte a[NUM_LEDS];
     const double mapped_t = mapf(minuteCounter, 0.0, 1440.0, 0.0, TWO_PI);
     const byte max_brightness = (byte)(63 * status.led_brightness);
     const double mapMin = (double)status.mapMin / 10.0;
@@ -455,7 +444,7 @@ void coordinate()
         double cosVal = cos(mapped_t - mapped_y) + 1;
         if (cosVal < LED_THRESHOLD)
         {
-            strip.setPixelColor(i, 0, 0, 0);
+            a[i] = 0;
         }
         else
         {
@@ -485,10 +474,16 @@ void coordinate()
                 blue = (byte)(rgb);
                 /* code */
             }
-            strip.setPixelColor(i, red, green, blue);
+            a[i] = red;
         }
     }
-    strip.show();
+    cli();
+    for (int i = 0; i < NUM_LEDS; i++)
+    {
+        sendPixel(a[i], a[i], a[i]);
+    }
+    sei();
+    show();
 }
 
 double mapf(double val, double in_min, double in_max, double out_min, double out_max)
@@ -517,24 +512,28 @@ void led_start_animation()
 {
     for (byte v = 0; v < 200; v++)
     {
+        cli();
         for (byte i = 0; i < status.ledCount; i++)
         {
-            strip.setPixelColor(i, 0, 0, v);
+            sendPixel(0, 0, v);
         }
-        strip.show();
+        sei();
+        show();
         delay(5);
     }
 }
 
 void led_stop_animation()
 {
-    for (byte v = 200; v > 0; v--)
+    for (byte v = 200; v >= 0; v--)
     {
+        cli();
         for (byte i = 0; i < status.ledCount; i++)
         {
-            strip.setPixelColor(i, 0, 0, v - 1);
+            sendPixel(0, 0, v);
         }
-        strip.show();
+        sei();
+        show();
         delay(5);
     }
 }
