@@ -3,8 +3,8 @@
         {
             "name": "Win32",
             "includePath": [
+                "C:\\Users\\berka\\AppData\\Local\\Arduino15\\packages\\ATTinyCore\\hardware\\avr\\1.3.2\\libraries\\tinyNeoPixel_Static",
                 "C:\\Users\\berka\\Documents\\Arduino\\libraries\\TM1637",
-                "C:\\Users\\berka\\Documents\\Arduino\\libraries\\light_ws2812-master\\light_ws2812_Arduino\\light_WS2812",
                 "C:\\Users\\berka\\Documents\\Arduino\\libraries\\arduino-ds1302-master",
                 "C:\\Users\\berka\\AppData\\Local\\Arduino15\\packages\\MiniCore\\hardware\\avr\\2.0.3\\**",
                 "C:\\Users\\berka\\Documents\\Arduino\\libraries\\Adafruit_NeoPixel"

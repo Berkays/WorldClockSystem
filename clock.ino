@@ -1,13 +1,11 @@
+#include <tinyNeoPixel_Static.h>
 
 #define ANALOGBUTTONS_MAX_SIZE 4
 
 #include <SoftwareSerial.h>
 #include <DS1302.h>
 #include <Adafruit_NeoPixel.h>
-#ifdef __AVR__
-#include <avr/power.h> // Required for 16 MHz Adafruit Trinket
-#endif
-#include <TM1637Display.h>
+// #include <TM1637Display.h>
 #include "AnalogButtons.h"
 #include "Pins.h"
 #include "functions.h"
@@ -19,9 +17,8 @@
 
 #pragma region BLUETOOTH
 SoftwareSerial BT(ARDUINO_RX, ARDUINO_TX);
-#define BUFFER_SIZE 5
+#define BUFFER_SIZE 3
 byte buffer[BUFFER_SIZE];
-byte cursor = 0;
 boolean newData = false;
 #define START_MARKER 0x0F
 #pragma endregion
@@ -30,17 +27,18 @@ boolean newData = false;
 DS1302 rtc(RTC_CE, RTC_IO, RTC_SCK);
 #define TIME_PERIOD 2000
 
-unsigned long lastMillis = 0;
 #ifdef USE_RTC
 DateTime lastUpdate;
+#else
+unsigned long lastMillis = 0;
 #endif
 #pragma endregion
 
 #pragma region LED
-#define NUM_LEDS 200
+#define NUM_LEDS 205
 #define LED_INITIAL_BRIGHTNESS 2 // 1-2-3-4 * 25%
-#define LED_THRESHOLD 1          // Divided by 10
-#define LED_MAP_MIN 10           // Divided by 10
+#define LED_THRESHOLD 1
+#define LED_MAP_MIN 1
 double INCREMENT = 1440.0 / (double)NUM_LEDS;
 
 Adafruit_NeoPixel strip(NUM_LEDS, LED_DAT, NEO_GRB + NEO_KHZ800);
@@ -50,16 +48,18 @@ double minuteCounter = 0;
 
 #pragma region BUTTONS
 AnalogButtons analogButtons(ANALOG_PIN, INPUT);
-Button b1 = Button(0, &btn_setHour);
-Button b2 = Button(320, &btn_setMinute);
-Button b3 = Button(485, &btn_setBrightness, &btn_setSpeed, 2000, 4000);
-Button b4 = Button(588, &btn_setTemperature, &btn_setLedCount, 2000, 1000);
+Button b1 = Button(0, &btn_setSpeed);
+Button b2 = Button(320, &btn_setLedCount);
+// Button b3 = Button(485, &btn_setBrightness, &btn_setSpeed, 2000, 4000);
+// Button b4 = Button(588, &btn_setTemperature, &btn_setLedCount, 2000, 1000);
+Button b3 = Button(485, &btn_setBrightness);
+Button b4 = Button(588, &btn_setTemperature);
 #pragma endregion
 
 #pragma region DISPLAY
-TM1637Display display(DISPLAY_CLK, DISPLAY_DATA);
-boolean isSetMode_hour = false;
-boolean isSetMode_min = false;
+// TM1637Display display(DISPLAY_CLK, DISPLAY_DATA);
+// boolean isSetMode_hour = false;
+// boolean isSetMode_min = false;
 #pragma endregion
 
 /*
@@ -112,12 +112,12 @@ typedef struct Status
     uint8_t led_state;
     uint8_t led_brightness;
     uint8_t led_temperature;
-    uint8_t speed;    // FOR DEBUG
-    uint8_t mapMin;   // FOR DEBUG
+    uint8_t speed; // FOR DEBUG
+    // uint8_t mapMin;   // FOR DEBUG
     uint8_t ledCount; // FOR DEBUG
     uint8_t hour;
     uint8_t minute;
-    uint16_t second;
+    // uint16_t second;
 };
 #pragma pop()
 
@@ -133,15 +133,15 @@ void setup()
 #else
     while (BT.available())
         BT.read();
-    BT.println("AT+E=0");
+    BT.println(F("AT+E=0"));
     while (BT.available())
         BT.read();
     delay(1000);
-    BT.println("AT+NOTIFY=0");
+    BT.println(F("AT+NOTIFY=0"));
     while (BT.available())
         BT.read();
     delay(1000);
-    BT.println("AT+FORCEC=0");
+    BT.println(F("AT+FORCEC=0"));
     while (BT.available())
         BT.read();
     delay(2000);
@@ -156,9 +156,9 @@ void setup()
     status.led_state = 1;
     status.led_brightness = LED_INITIAL_BRIGHTNESS; // N * 25%
     status.led_temperature = 3;
-    status.speed = 0;            // FOR DEBUG
-    status.ledCount = NUM_LEDS;  // FOR DEBUG
-    status.mapMin = LED_MAP_MIN; // FOR DEBUG
+    status.speed = 0;           // FOR DEBUG
+    status.ledCount = NUM_LEDS; // FOR DEBUG
+    // status.mapMin = LED_MAP_MIN; // FOR DEBUG
 
 #ifdef USE_RTC
     rtc.writeProtect(false);
@@ -178,8 +178,9 @@ void setup()
 
 #ifdef USE_RTC
     lastUpdate = rtc.time();
-#endif
+#else
     lastMillis = millis();
+#endif
     isRunning = true;
 }
 
@@ -245,30 +246,31 @@ void updateSecond()
 #else
 void updateSecond_rtc()
 {
-    unsigned long currentMillis = millis();
-    long gap = currentMillis - lastMillis;
-    if (gap > TIME_PERIOD)
-    {
-        lastMillis = currentMillis;
-        DateTime now = rtc.time();
-        TimeDelta diff = now - lastUpdate;
-        if (status.speed == 1)
-        {
-            // Add 1 minute
-            now = now + TimeDelta(diff.totalseconds() * 60);
-        }
-        else if (status.speed == 2)
-        {
-            // Add 10 minute
-            now = now + TimeDelta(diff.totalseconds() * 600);
-        }
-        lastUpdate = now;
-        rtc.time(now);
-        minuteCounter = (uint16_t)now.hour() * (uint16_t)now.minute();
+    DateTime now = rtc.time();
+    TimeDelta diff = now - lastUpdate;
+    uint32_t totalseconds = diff.totalseconds();
+    if (totalseconds == 0)
+        return;
 
-        if (isRunning)
-            coordinate();
+    if (status.speed == 1)
+    {
+        // Add 1 minute
+        now = now + TimeDelta(totalseconds * 60);
     }
+    else if (status.speed == 2)
+    {
+        // Add 10 minute
+        now = now + TimeDelta(totalseconds * 600);
+    }
+
+    rtc.time(now);
+    minuteCounter = (uint16_t)now.hour() * (uint16_t)now.minute();
+
+    if (isRunning)
+        coordinate();
+
+    lastUpdate = now;
+    delay(10);
 }
 #endif
 
@@ -343,7 +345,7 @@ void parse_data()
             minute = 0;
         now.sethour(hour);
         now.setminute(minute);
-        minuteCounter = (double)now.hour() * (double)now.minute();
+        rtc.time(now);
 #else
         status.hour = buffer[1];
         status.minute = buffer[2];
@@ -376,13 +378,13 @@ void parse_data()
             status.led_temperature = 3;
         transmitStatus();
     }
-    else if (command == CMD_MAPMIN)
-    {
-        status.mapMin = buffer[1];
-        if (status.mapMin > 12)
-            status.mapMin = 8;
-        transmitStatus();
-    }
+    // else if (command == CMD_MAPMIN)
+    // {
+    //     status.mapMin = buffer[1];
+    //     if (status.mapMin > 12)
+    //         status.mapMin = 8;
+    //     transmitStatus();
+    // }
     else if (command == CMD_LED_COUNT)
     {
         status.ledCount = buffer[1];
@@ -447,7 +449,7 @@ void coordinate()
 {
     const double mapped_t = mapf(minuteCounter, 0.0, 1440.0, 0.0, TWO_PI);
     const byte max_brightness = (byte)(63 * status.led_brightness);
-    const double mapMin = (double)status.mapMin / 10.0;
+
     for (byte i = 0; i < status.ledCount; i++)
     {
         double ledVal = (double)i * INCREMENT;
@@ -459,7 +461,7 @@ void coordinate()
         }
         else
         {
-            double rgb = mapf(cosVal, mapMin, 2.0, 1.0, max_brightness);
+            double rgb = mapf(cosVal, LED_MAP_MIN, 2.0, 1.0, max_brightness);
             const byte red = (byte)rgb;
             byte green = 255;
             byte blue = 255;
@@ -543,13 +545,13 @@ void btn_setBrightness()
 {
     status.led_brightness = (status.led_brightness % 4) + 1;
 
-    if (isSetMode_hour || isSetMode_min)
-    {
-        isSetMode_hour = false;
-        isSetMode_min = false;
-        display.clear();
-        display.setBrightness(5, false);
-    }
+    // if (isSetMode_hour || isSetMode_min)
+    // {
+    //     isSetMode_hour = false;
+    //     isSetMode_min = false;
+    //     // display.clear();
+    //     // display.setBrightness(5, false);
+    // }
 }
 
 void btn_setSpeed()
@@ -561,13 +563,13 @@ void btn_setTemperature()
 {
     status.led_temperature = (status.led_temperature + 1) % 4;
 
-    if (isSetMode_hour || isSetMode_min)
-    {
-        isSetMode_hour = false;
-        isSetMode_min = false;
-        display.clear();
-        display.setBrightness(5, false);
-    }
+    // if (isSetMode_hour || isSetMode_min)
+    // {
+    //     isSetMode_hour = false;
+    //     isSetMode_min = false;
+    //     // display.clear();
+    //     // display.setBrightness(5, false);
+    // }
 }
 
 void btn_setLedCount()
@@ -580,62 +582,62 @@ void btn_setLedCount()
 
 void btn_setHour()
 {
-    if (isSetMode_hour == false)
-    {
-        if (isSetMode_min == true)
-        {
-            // Decrement minute
-            DateTime now = rtc.time();
-            now = now - TimeDelta(0, 0, 1, 0);
-            rtc.time(now);
-            display.showNumberDec((now.hour() * 1000) + now.minute());
-        }
-        else
-        {
-            isSetMode_hour = true;
-            display.setBrightness(5);
-            DateTime now = rtc.time();
-            display.showNumberDec((now.hour() * 1000) + now.minute());
-        }
-    }
-    else
-    {
-        // Decrement hour
-        DateTime now = rtc.time();
-        now = now - TimeDelta(0, 1, 0, 0);
-        rtc.time(now);
-        display.showNumberDec((now.hour() * 1000) + now.minute());
-    }
+    // if (isSetMode_hour == false)
+    // {
+    //     if (isSetMode_min == true)
+    //     {
+    //         // Decrement minute
+    //         DateTime now = rtc.time();
+    //         now = now - TimeDelta(0, 0, 1, 0);
+    //         rtc.time(now);
+    //         // display.showNumberDec((now.hour() * 1000) + now.minute());
+    //     }
+    //     else
+    //     {
+    //         isSetMode_hour = true;
+    //         display.setBrightness(5);
+    //         DateTime now = rtc.time();
+    //         // display.showNumberDec((now.hour() * 1000) + now.minute());
+    //     }
+    // }
+    // else
+    // {
+    //     // Decrement hour
+    //     DateTime now = rtc.time();
+    //     now = now - TimeDelta(0, 1, 0, 0);
+    //     rtc.time(now);
+    //     // display.showNumberDec((now.hour() * 1000) + now.minute());
+    // }
 }
 
 void btn_setMinute()
 {
-    if (isSetMode_min == false)
-    {
-        if (isSetMode_hour == true)
-        {
-            // Increment hour
-            DateTime now = rtc.time();
-            now = now + TimeDelta(0, 1, 0, 0);
-            rtc.time(now);
-            display.showNumberDec((now.hour() * 1000) + now.minute());
-        }
-        else
-        {
-            isSetMode_min = true;
-            // display.setBrightness(5);
-            DateTime now = rtc.time();
-            display.showNumberDec((now.hour() * 1000) + now.minute());
-        }
-    }
-    else
-    {
-        // Increment minute
-        DateTime now = rtc.time();
-        now = now + TimeDelta(0, 0, 1, 0);
-        rtc.time(now);
-        display.showNumberDec((now.hour() * 1000) + now.minute());
-    }
+    // if (isSetMode_min == false)
+    // {
+    //     if (isSetMode_hour == true)
+    //     {
+    //         // Increment hour
+    //         DateTime now = rtc.time();
+    //         now = now + TimeDelta(0, 1, 0, 0);
+    //         rtc.time(now);
+    //         // display.showNumberDec((now.hour() * 1000) + now.minute());
+    //     }
+    //     else
+    //     {
+    //         isSetMode_min = true;
+    //         // display.setBrightness(5);
+    //         DateTime now = rtc.time();
+    //         // display.showNumberDec((now.hour() * 1000) + now.minute());
+    //     }
+    // }
+    // else
+    // {
+    //     // Increment minute
+    //     DateTime now = rtc.time();
+    //     now = now + TimeDelta(0, 0, 1, 0);
+    //     rtc.time(now);
+    //     // display.showNumberDec((now.hour() * 1000) + now.minute());
+    // }
 }
 
 #ifdef BLUEOOTH_SETUP
