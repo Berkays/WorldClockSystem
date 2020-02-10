@@ -27,7 +27,6 @@ boolean newData = false;
 DS1302 rtc(RTC_CE, RTC_IO, RTC_SCK);
 #define TIME_PERIOD 2000
 
-unsigned long lastMillis = 0;
 #ifdef USE_RTC
 DateTime lastUpdate;
 #endif
@@ -174,7 +173,6 @@ void setup()
 #ifdef USE_RTC
     lastUpdate = rtc.time();
 #endif
-    lastMillis = millis();
     isRunning = true;
 }
 
@@ -242,22 +240,29 @@ void updateSecond_rtc()
 {
     DateTime now = rtc.time();
     TimeDelta diff = now - lastUpdate;
+    uint32_t totalseconds = diff.totalseconds();
+    if (totalseconds == 0)
+        return;
+
     if (status.speed == 1)
     {
         // Add 1 minute
-        now = now + TimeDelta(diff.totalseconds() * 60);
+        now = now + TimeDelta(totalseconds * 60);
     }
     else if (status.speed == 2)
     {
         // Add 10 minute
-        now = now + TimeDelta(diff.totalseconds() * 600);
+        now = now + TimeDelta(totalseconds * 600);
     }
-    lastUpdate = now;
+
     rtc.time(now);
     minuteCounter = (uint16_t)now.hour() * (uint16_t)now.minute();
 
     if (isRunning)
         coordinate();
+
+    lastUpdate = now;
+    delay(10);
 }
 #endif
 
