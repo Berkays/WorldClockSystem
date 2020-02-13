@@ -161,7 +161,7 @@ void setup()
     status.second = 0;
 #endif
 
-    ledsetup();
+    led_setup();
     // colorWipe(0, 0, 255, 0);
     // colorWipe(255, 0, 0, 0);
     // colorWipe(0, 255, 0, 0);

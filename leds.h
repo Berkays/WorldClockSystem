@@ -117,9 +117,8 @@ inline void sendByte(unsigned char byte)
 
 // Set the specified pin up as digital out
 
-void ledsetup()
+void led_setup()
 {
-
     bitSet(PIXEL_DDR, PIXEL_BIT);
 }
 
