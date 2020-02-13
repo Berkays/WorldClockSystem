@@ -1,6 +1,5 @@
 
 #define ANALOGBUTTONS_MAX_SIZE 4
-
 #include <SoftwareSerial.h>
 #include <DS1302.h>
 #include <TM1637Display.h>
@@ -16,28 +15,29 @@
 
 #pragma region BLUETOOTH
 SoftwareSerial BT(ARDUINO_RX, ARDUINO_TX);
-#define BUFFER_SIZE 5
-byte buffer[BUFFER_SIZE];
-byte cursor = 0;
-boolean newData = false;
+#define BUFFER_SIZE 3
 #define START_MARKER 0x0F
+byte buffer[BUFFER_SIZE];
+boolean newData = false;
 #pragma endregion
 
 #pragma region TIME
-DS1302 rtc(RTC_CE, RTC_IO, RTC_SCK);
 #define TIME_PERIOD 2000
+unsigned long lastMillis;
 
 #ifdef USE_RTC
+DS1302 rtc(RTC_CE, RTC_IO, RTC_SCK);
 DateTime lastUpdate;
 #endif
 #pragma endregion
 
 #pragma region LED
-#define NUM_LEDS 125
+#define NUM_LEDS 230
 #define LED_INITIAL_BRIGHTNESS 2 // 1-2-3-4 * 25%
-#define LED_THRESHOLD 1          // Divided by 10
-#define LED_MAP_MIN 1            // Divided by 10
-double INCREMENT = 1440.0 / (double)NUM_LEDS;
+#define LED_THRESHOLD 1          // Half the leds
+#define LED_MAP_MIN 1
+#define STEP_COUNT 1440.0 // 24 * 60
+double INCREMENT = STEP_COUNT / (double)NUM_LEDS;
 
 boolean isRunning = false;
 double minuteCounter = 0;
@@ -107,12 +107,11 @@ typedef struct Status
     uint8_t led_state;
     uint8_t led_brightness;
     uint8_t led_temperature;
+    uint8_t hour;
+    uint8_t minute;
     uint8_t speed;    // FOR DEBUG
     uint8_t mapMin;   // FOR DEBUG
     uint8_t ledCount; // FOR DEBUG
-    uint8_t hour;
-    uint8_t minute;
-    uint16_t second;
 };
 #pragma pop()
 
@@ -122,23 +121,21 @@ void setup()
 {
     // Serial.begin(9600);
     BT.begin(38400);
-    delay(500);
+    delay(8000); // Wait for bluetooth module
 #ifdef BLUEOOTH_SETUP
     bt_setup();
 #else
+    BT.println(F("AT+E=0"));
     while (BT.available())
-        BT.read();
-    BT.println("AT+E=0");
-    while (BT.available())
-        BT.read();
+        BT.readString();
     delay(1000);
-    BT.println("AT+NOTIFY=0");
+    BT.println(F("AT+NOTIFY=0"));
     while (BT.available())
-        BT.read();
+        BT.readString();
     delay(1000);
-    BT.println("AT+FORCEC=0");
+    BT.println(F("AT+FORCEC=0"));
     while (BT.available())
-        BT.read();
+        BT.readString();
     delay(2000);
 #endif
 
@@ -163,13 +160,15 @@ void setup()
     status.minute = 0;
     status.second = 0;
 #endif
+
     ledsetup();
-    colorWipe(0, 0, 255, 0);
-    colorWipe(255, 0, 0, 0);
-    colorWipe(0, 255, 0, 0);
+    // colorWipe(0, 0, 255, 0);
+    // colorWipe(255, 0, 0, 0);
+    // colorWipe(0, 255, 0, 0);
     // led_start_animation();
     // led_stop_animation();
 
+    lastMillis = millis();
 #ifdef USE_RTC
     lastUpdate = rtc.time();
 #endif
@@ -178,7 +177,6 @@ void setup()
 
 void loop()
 {
-    analogButtons.check();
 #ifdef USE_RTC
     updateSecond_rtc();
 #else
@@ -238,30 +236,35 @@ void updateSecond()
 #else
 void updateSecond_rtc()
 {
+    if (millis() - lastMillis < 1000)
+        return;
     DateTime now = rtc.time();
+
     TimeDelta diff = now - lastUpdate;
     uint32_t totalseconds = diff.totalseconds();
-    if (totalseconds == 0)
-        return;
+    // if (totalseconds == 0)
+    //     return;
 
-    if (status.speed == 1)
-    {
-        // Add 1 minute
-        now = now + TimeDelta(totalseconds * 60);
-    }
-    else if (status.speed == 2)
-    {
-        // Add 10 minute
-        now = now + TimeDelta(totalseconds * 600);
-    }
+    DateTime dt = DateTime(now.unixtime() + 6000L);
+    // if (status.speed == 1)
+    // {
+    //     // Add 1 minute
+    //     now = now + TimeDelta(totalseconds * 60);
+    // }
+    // else if (status.speed == 2)
+    // {
+    //     // Add 10 minute
+    //     now = now + TimeDelta(totalseconds * 600);
+    // }
 
-    rtc.time(now);
-    minuteCounter = (uint16_t)now.hour() * (uint16_t)now.minute();
+    minuteCounter = (uint16_t)dt.hour() * (uint16_t)dt.minute();
+    rtc.time(dt);
 
     if (isRunning)
         coordinate();
 
-    lastUpdate = now;
+    lastUpdate = dt;
+    lastMillis = millis();
     delay(10);
 }
 #endif
@@ -283,23 +286,19 @@ void recv()
                 recvInProgress = false;
                 ndx = 0;
                 newData = true;
-                check_data();
+                parse_data();
+                newData = false;
             }
         }
 
         else if (rc == START_MARKER)
         {
             recvInProgress = true;
-        }
-    }
-}
 
-void check_data()
-{
-    if (newData == true)
-    {
-        parse_data();
-        newData = false;
+            // Clear buffer
+            for (uint8_t i = 0; i < BUFFER_SIZE; i++)
+                buffer[i] = 0;
+        }
     }
 }
 
@@ -308,12 +307,7 @@ void parse_data()
     byte command = buffer[0];
     if (command == CMD_POWER)
     {
-        if (status.led_state == 0)
-            status.led_state = 1;
-        else
-            status.led_state = 0;
         toggle_led();
-        transmitStatus();
     }
     else if (command == CMD_BRIGHTNESS)
     {
@@ -323,7 +317,6 @@ void parse_data()
         else if (brightness > 4)
             brightness = 4;
         status.led_brightness = brightness;
-        transmitStatus();
     }
     else if (command == CMD_TIME)
     {
@@ -348,8 +341,6 @@ void parse_data()
         else if (minuteCounter < 0)
             minuteCounter = 0;
 #endif
-
-        transmitStatus();
     }
     // else if (command == CMD_BT_PWR)
     // {
@@ -361,32 +352,30 @@ void parse_data()
         status.speed = buffer[1];
         if (status.speed > 2)
             status.speed = 2;
-        transmitStatus();
     }
     else if (command == CMD_TEMPERATURE)
     {
         status.led_temperature = buffer[1];
         if (status.led_temperature > 3)
             status.led_temperature = 3;
-        transmitStatus();
     }
     else if (command == CMD_MAPMIN)
     {
         status.mapMin = buffer[1];
         if (status.mapMin > 12)
             status.mapMin = 8;
-        transmitStatus();
     }
     else if (command == CMD_LED_COUNT)
     {
         status.ledCount = buffer[1];
         updateLedCount();
-        transmitStatus();
     }
     else if (command == CMD_STATUS)
     {
-        transmitStatus();
+        // transmitStatus();
     }
+
+    transmitStatus();
 }
 
 void transmitStatus()
@@ -400,6 +389,11 @@ void transmitStatus()
 
 void toggle_led()
 {
+    if (status.led_state == 0)
+        status.led_state = 1;
+    else
+        status.led_state = 0;
+
     if (status.led_state == 1)
         show_led();
     else
@@ -409,9 +403,7 @@ void toggle_led()
 void updateLedCount()
 {
     isRunning = false;
-    // strip = Adafruit_NeoPixel(status.ledCount, LED_DAT, NEO_GRB + NEO_KHZ800);
-    INCREMENT = 1440.0 / (double)status.ledCount;
-
+    INCREMENT = STEP_COUNT / (double)status.ledCount;
     isRunning = true;
 }
 
@@ -423,37 +415,34 @@ void awake_bt()
 
 void show_led()
 {
-    led_start_animation();
-
-    showColor(0, 0, 0);
+    // led_start_animation();
     isRunning = true;
 }
 
 void close_led()
 {
-    led_stop_animation();
-
+    // led_stop_animation();
     isRunning = false;
 }
 
 void coordinate()
 {
-    byte a[NUM_LEDS];
-    const double mapped_t = mapf(minuteCounter, 0.0, 1440.0, 0.0, TWO_PI);
+    byte cache[status.ledCount];
+    const double mapped_t = mapf(minuteCounter, 0.0, STEP_COUNT, 0.0, TWO_PI);
     const byte max_brightness = (byte)(63 * status.led_brightness);
-    const double mapMin = (double)status.mapMin / 10.0;
+
     for (byte i = 0; i < status.ledCount; i++)
     {
         double ledVal = (double)i * INCREMENT;
-        double mapped_y = mapf(ledVal, 0.0, 1440 - INCREMENT, 0.0, TWO_PI);
+        double mapped_y = mapf(ledVal, 0.0, STEP_COUNT - INCREMENT, 0.0, TWO_PI);
         double cosVal = cos(mapped_t - mapped_y) + 1;
         if (cosVal < LED_THRESHOLD)
         {
-            a[i] = 0;
+            cache[i] = 0;
         }
         else
         {
-            double rgb = mapf(cosVal, mapMin, 2.0, 1.0, max_brightness);
+            double rgb = mapf(cosVal, LED_MAP_MIN, 2.0, 1.0, max_brightness);
             const byte red = (byte)rgb;
             byte green = 255;
             byte blue = 255;
@@ -479,7 +468,7 @@ void coordinate()
                 blue = (byte)(rgb);
                 /* code */
             }
-            a[i] = red;
+            cache[i] = red;
         }
     }
     cli();
@@ -495,23 +484,6 @@ double mapf(double val, double in_min, double in_max, double out_min, double out
 {
     return out_min + ((val - in_min) * (out_max - out_min) / (in_max - in_min));
 }
-
-// void coordinate()
-// {
-//     for (byte i = 0; i < NUM_LEDS; i++)
-//     {
-//         double sinVal = sin(0.004363325 * ((minuteCounter + (i * 48)))) * 1785;
-
-//         if (sinVal > 255)
-//             sinVal = 255;
-//         if (sinVal < 0)
-//             sinVal = 0;
-
-//         byte val = (byte)(sinVal);
-//         strip.setPixelColor(i, val, val, val);
-//     }
-//     strip.show();
-// }
 
 void led_start_animation()
 {
@@ -578,8 +550,7 @@ void btn_setLedCount()
 {
     status.ledCount++;
     if (status.ledCount == 255)
-        status.ledCount = 200;
-    updateLedCount();
+        status.ledCount = 210;
 }
 
 void btn_setHour()
